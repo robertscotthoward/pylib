@@ -2,6 +2,7 @@
 
 credentials.*
 /cache/
+/data/vdb/
 
 
 # Byte-code files

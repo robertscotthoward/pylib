@@ -118,7 +118,7 @@ class VectorDb:
         """
         Load corpus from a folder into the vector database
         @corpus_folder is the folder to load the corpus from.
-        @last_updated is the minimum last updated time of the files in the corpus to load. All other files will be skipped.
+        @last_updated is the minimum last updated time of the files in the corpus to load. All other files will be skipped. If 0, all files will be loaded.
         @return the maximum last updated time of the files in the corpus.
         """
         
@@ -137,13 +137,16 @@ class VectorDb:
 
         # Pre-scan the corpus to find the maximum last updated time
         m = 0
+        num_documents = 0
         for filepath in self.corpus.enumerate_files():
+            num_documents += 1
             file_updated = os.path.getmtime(filepath)
             if file_updated > m:
                 m = file_updated
         sMaxUpdate = datetime.datetime.fromtimestamp(m).isoformat()
+        self.num_documents = num_documents
 
-        # if m == last_updated:
+        # if m == last_updated and numDocs == self.corpus.get_file_count():
         #     return m
 
         embedded_files = self.get_embedded_files()

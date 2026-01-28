@@ -150,10 +150,10 @@ group by 1
                 print(f"[DEBUG] get_embedded_files: original query returned 0, trying metadata approach")
                 sql_alt = """
 SELECT 
-    json_extract(metadata, '$.filename') AS filename,
+    json_extract(embedding_id, '$.filename') AS filename,
     count(*) N
 FROM embeddings
-WHERE json_extract(metadata, '$.filename') IS NOT NULL
+WHERE json_extract(embedding_id, '$.filename') IS NOT NULL
 GROUP BY filename
                 """
                 cursor = db.execute(sql_alt)

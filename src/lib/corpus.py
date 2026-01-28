@@ -31,6 +31,11 @@ class Corpus:
                     yield filepath
 
 
+    def get_file_count(self):
+        """Return the number of files in the corpus."""
+        return len(list(self.enumerate_files()))
+        
+
     def get_text(self, filepath):
         return lib.fileconvert.get_text(filepath)
 
