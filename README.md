@@ -24,14 +24,60 @@ uv run pytest
 * Select launch setting "Test"
 
 
-# Use in another project
+# Use the library
+These workflows allow you to toggle between active development using local editable links for instant updates and isolated stability by pinning to specific Git tags or branches via GitHub or local file paths. By leveraging uv's flexible dependency mapping, you can ensure one project remains "locked" to a verified version while another tracks the "latest" changes for testing.
+
+## Use in another project (live)
 ```
-Create a project folder.
+Create a project folder (project1).
 uv init --python 3.13
 uv add --editable ../../lib
 
 # Test:
 uv run python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
+```
+
+## Use in another project (versioned)
+
+pylib:
+```
+git tag v1.0.0
+git tag
+git push origin v1.0.0
+```
+
+project2:
+```
+uv add "pylib @ git+https://github.com/robertscotthoward/pylib@v1.0.0"
+```
+
+
+## Use the latest version:
+```
+uv add "pylib @ git+https://github.com/robertscotthoward/pylib@main"
+
+# then later
+
+uv lock --upgrade-package pylib
+```
+
+
+# The "Local-Main" Hybrid
+If you want the "latest" but haven't pushed to GitHub yet, you can track the local branch:
+```
+uv add "pylib @ git+file:///C:/Rob/GitHub/robertscotthoward/python/pylib@main"
+# or
+uv add "pylib @ git+file:///C:/Rob/GitHub/robertscotthoward/python/pylib@v1.0.0"
+```
+
+
+## Tags
+```
+# List local tags
+git tag
+
+# List remote tags:
+git ls-remote --tags origin
 ```
 
 ---

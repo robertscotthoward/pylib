@@ -674,6 +674,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/36/5f/a5e20bb601f83f4abd491e0aec2b991d23f54fefa135b64e4203b3cb59d6/FlagEmbedding-1.3.5.tar.gz", hash = "sha256:a0714cb8dd03f38e74b84530684c47ad8e0442ab1f4cbb7b0bcd4017dafb9f9c", size = 163889, upload-time = "2025-05-28T07:03:56.693Z" }
 
 [[package]]
+name = "flashrank"
+version = "0.2.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "onnxruntime" },
+    { name = "requests" },
+    { name = "tokenizers" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/55/1f/176cb4a857a70c3538f637e19389ab6aed21548a1ba1d1424fccc8bba108/FlashRank-0.2.10.tar.gz", hash = "sha256:f8f82a25c32fdfc668a09dc4089421d6aab8e7f71308424b541f40bb3f01d9db", size = 18905, upload-time = "2025-01-06T13:33:01.657Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/99/72639cc1c9221c5bc77a2df1c2d352fe11965553bdf7d3e0856e7fcc8fd6/FlashRank-0.2.10-py3-none-any.whl", hash = "sha256:5d3272ae657d793c132d1e7917ed9e2adf49e0e1c60735583a67b051c6f0434a", size = 14511, upload-time = "2025-01-06T13:32:59.42Z" },
+]
+
+[[package]]
 name = "flatbuffers"
 version = "25.12.19"
 source = { registry = "https://pypi.org/simple" }
@@ -2555,6 +2571,7 @@ dependencies = [
     { name = "chromadb" },
     { name = "ebooklib" },
     { name = "flagembedding" },
+    { name = "flashrank" },
     { name = "langchain-text-splitters" },
     { name = "pypdf", extra = ["crypto"] },
     { name = "python-docx" },
@@ -2576,6 +2593,7 @@ requires-dist = [
     { name = "chromadb", specifier = ">=1.4.1" },
     { name = "ebooklib", specifier = ">=0.20" },
     { name = "flagembedding", specifier = ">=1.3.5" },
+    { name = "flashrank", specifier = ">=0.2.10" },
     { name = "langchain-text-splitters", specifier = ">=1.1.0" },
     { name = "pypdf", extras = ["crypto"], specifier = ">=6.6.2" },
     { name = "python-docx", specifier = ">=1.2.0" },
