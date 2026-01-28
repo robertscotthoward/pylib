@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: main",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-v",
+                "tests"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}

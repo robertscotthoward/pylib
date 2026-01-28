@@ -1,0 +1,108 @@
+# Zinclusive
+
+credentials.*
+/cache/
+
+
+# Byte-code files
+*.pyc
+__pycache__/
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+build/
+develop-eggs/
+dist/
+eggs/
+.eggs/
+# lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.txt
+htmlcov/
+.nox/
+.tox/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.pytest_cache/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.coverage
+.coverage.*
+.hypothesis/
+.pytest_cache/
+
+# PyInstaller
+*.spec
+build/
+dist/
+
+# Jupyter Notebook files
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# Virtualenv
+# Specific versions of virtualenv directories (e.g., myenv_3.9)
+# Use a wildcard to ignore all virtualenv directories:
+# */lib/python*/site-packages/
+# This is a bit too broad and might hide legitimate code in some cases.
+# Better to explicitly list common virtualenv names:
+venv/
+env/
+.venv/
+
+# Env files (for environment variables)
+.env
+.flaskenv
+.settings.local
+
+# IDEs and Editors
+#.vscode/
+
+# PyCharm
+.idea/
+# Other IDEs/Editors
+*.sublime-project
+*.sublime-workspace
+*.tm_properties
+
+# Ctags
+tags
+
+# Editor backup files
+*~
+*.bak
+*.swp
+.DS_Store # macOS
+.Trashes # macOS
+Thumbs.db # Windows
+
+# Operating System files
+.directory
+Desktop.ini
+
+# My custom stuff
+# If you have specific files or directories you always want to ignore, add them here.
+# For example:
+# my_secret_data.txt
+# logs/
