@@ -53,10 +53,26 @@ class Raptor:
             
             # Create directory and save the storage context
             self.persist_dir.mkdir(parents=True, exist_ok=True)
-            # RaptorPack has a storage_context we can persist
-            if hasattr(self.raptor_pack, 'storage_context'):
-                self.raptor_pack.storage_context.persist(persist_dir=str(self.persist_dir))
-            print(f"--- Index saved to {self.persist_dir} ---")
+            # Try to access and persist the storage context from the retriever
+            try:
+                retriever = self.raptor_pack.retriever
+                print(f"Retriever type: {type(retriever)}")
+                print(f"Retriever attributes: {[attr for attr in dir(retriever) if not attr.startswith('_')]}")
+                
+                # Try different ways to access the underlying data
+                if hasattr(retriever, 'index'):
+                    index = retriever.index
+                    if hasattr(index, 'storage_context'):
+                        index.storage_context.persist(persist_dir=str(self.persist_dir))
+                        print(f"--- Index saved to {self.persist_dir} ---")
+                elif hasattr(retriever, '_retriever'):
+                    print(f"Found _retriever: {type(retriever._retriever)}")
+                else:
+                    print(f"Warning: Could not find index on retriever")
+            except Exception as e:
+                print(f"Warning: Error persisting index: {e}")
+                import traceback
+                traceback.print_exc()
 
     def query(self, query_str):
         # Using the retriever directly from the pack
@@ -67,17 +83,11 @@ class Raptor:
         """Print the clusters created by RAPTOR."""
         print("\n=== RAPTOR Clusters ===")
         try:
-            # Try to access the nodes from the retriever's index
-            if hasattr(self.raptor_pack, '_index') and hasattr(self.raptor_pack._index, 'docstore'):
-                nodes = self.raptor_pack._index.docstore.docs.values()
-                for i, node in enumerate(nodes):
-                    print(f"\nCluster {i}:")
-                    text = node.text if hasattr(node, 'text') else str(node)[:200]
-                    print(f"  Text: {text[:200]}...")
-                    if hasattr(node, 'metadata'):
-                        print(f"  Metadata: {node.metadata}")
-            elif hasattr(self.raptor_pack, 'retriever') and hasattr(self.raptor_pack.retriever, '_index'):
-                nodes = self.raptor_pack.retriever._index.docstore.docs.values()
+            retriever = self.raptor_pack.retriever
+            # Access the index from the retriever
+            if hasattr(retriever, '_index') and hasattr(retriever._index, 'docstore'):
+                nodes = list(retriever._index.docstore.docs.values())
+                print(f"Found {len(nodes)} nodes/clusters")
                 for i, node in enumerate(nodes):
                     print(f"\nCluster {i}:")
                     text = node.text if hasattr(node, 'text') else str(node)[:200]
@@ -85,26 +95,28 @@ class Raptor:
                     if hasattr(node, 'metadata'):
                         print(f"  Metadata: {node.metadata}")
             else:
-                print("Could not access clusters from raptor_pack")
-                print(f"Available attributes: {[attr for attr in dir(self.raptor_pack) if not attr.startswith('_')]}")
+                print("Could not access index from retriever")
+                print(f"Retriever attributes: {[attr for attr in dir(retriever) if not attr.startswith('_')]}")
         except Exception as e:
             print(f"Error accessing clusters: {e}")
+            import traceback
+            traceback.print_exc()
 
     def print_hierarchy(self):
         """Print the hierarchy tree created by RAPTOR."""
         print("\n=== RAPTOR Hierarchy ===")
         try:
-            # Try to access the nodes from the retriever's index
-            if hasattr(self.raptor_pack, '_index') and hasattr(self.raptor_pack._index, 'docstore'):
-                nodes = list(self.raptor_pack._index.docstore.docs.values())
-                self._print_tree(nodes, level=0)
-            elif hasattr(self.raptor_pack, 'retriever') and hasattr(self.raptor_pack.retriever, '_index'):
-                nodes = list(self.raptor_pack.retriever._index.docstore.docs.values())
+            retriever = self.raptor_pack.retriever
+            # Access the index from the retriever
+            if hasattr(retriever, '_index') and hasattr(retriever._index, 'docstore'):
+                nodes = list(retriever._index.docstore.docs.values())
                 self._print_tree(nodes, level=0)
             else:
-                print("Could not access hierarchy from raptor_pack")
+                print("Could not access index from retriever")
         except Exception as e:
             print(f"Error accessing hierarchy: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _print_tree(self, nodes, level=0):
         """Recursively print the tree structure."""
