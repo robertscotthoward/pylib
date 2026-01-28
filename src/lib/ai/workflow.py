@@ -1,13 +1,13 @@
 import glob
 import shutil
-from lib.corpus import get_text
-from lib.fileconvert import convert_doc_to_docx
+from lib.ai.corpus import Corpus
+from lib.ai.fileconvert import convert_doc_to_docx
 from lib.tools import *
 
 
 
 def transformDocToDocx(inputFolders, outputFolder):
-    from lib.fileconvert import transform_all_doc_to_docx
+    from lib.ai.fileconvert import transform_all_doc_to_docx
     for inputFolder in inputFolders:
         transform_all_doc_to_docx(inputFolder, outputFolder)
 

@@ -5,16 +5,16 @@ import sqlite3
 import chromadb
 from chromadb.config import Settings
 
-from lib.corpus import Corpus
-from lib.splitter import RecursiveCharacterText_Splitter
+from lib.ai.corpus import Corpus
+from lib.ai.splitter import RecursiveCharacterText_Splitter
 from lib.tools import *
-from lib.vectordb import VectorDb
+from lib.ai.vectordb import VectorDb
 
 
 class ChromaVectorDb(VectorDb):
     """RAG system for querying a corpus using ChromaDB vector database"""
 
-    def __init__(self, corpus, splitter, collection_path=None, reranker=None):
+    def __init__(self, corpus=None, splitter=None, collection_path=None, reranker=None):
         super().__init__(corpus, splitter, os.path.basename(collection_path) if collection_path else None, reranker)
         # Suppose collection_path is D:\rob\rag\vectordb\zinweb
         # Then collection_dir is D:\rob\rag\vectordb\zinweb

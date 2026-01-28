@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import joblib
-from lib.vectordb import VectorDb
+from lib.ai.vectordb import VectorDb
 
 
 class NumpyVectorDb(VectorDb):

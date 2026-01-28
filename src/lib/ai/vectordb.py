@@ -2,10 +2,10 @@ import os
 import json
 import datetime
 import re
-from lib.fileconvert import get_text
-from lib.splitter import *
+from lib.ai.fileconvert import get_text
+from lib.ai.splitter import *
 from lib.tools import *
-from lib.corpus import *
+from lib.ai.corpus import *
 from chromadb.config import Settings
 
 
@@ -33,11 +33,22 @@ def read_corpus_document(filepath):
 
 
 class VectorDb:
+    """
+    Base class for vector databases, which are objects that store and query embeddings of documents.
+    @corpus is the corpus of documents to store and query.
+    @splitter is the splitter to use to split the documents into chunks.
+    @collection_name is the name of the collection to use.
+    @reranker is the reranker to use to rerank the results.
+    """
     def __init__(self, corpus, splitter, collection_name, reranker=None):
         self.collection_name = collection_name
         self.corpus = corpus
         self.splitter = splitter
         self.reranker = reranker
+
+    def retrieve_documents(self, query, n_results=80):
+        raise NotImplementedError("Subclasses must implement this method.")
+
 
     def add_chunk(self, chunk, filepath, chunk_index, file_date=None):
         if not hasattr(self, 'chunk_batch') or not self.chunk_batch:

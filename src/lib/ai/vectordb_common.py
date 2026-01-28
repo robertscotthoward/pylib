@@ -3,15 +3,15 @@ import json
 import datetime
 import re
 import sqlite3
-from lib.fileconvert import get_text
-from lib.splitter import *
-from lib.tools import *
-from lib.corpus import *
 import chromadb
+from lib.ai.fileconvert import get_text
+from lib.ai.splitter import *
+from lib.tools import *
+from lib.ai.corpus import *
 from chromadb.config import Settings
-from lib.vectordb_chroma import ChromaVectorDb
-from lib.vectordb_numpy import NumpyVectorDb
-from lib.rerankers import *
+from lib.ai.vectordb_chroma import ChromaVectorDb
+from lib.ai.vectordb_numpy import NumpyVectorDb
+from lib.ai.rerankers import *
 
 
 

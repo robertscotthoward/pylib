@@ -1,4 +1,4 @@
-from lib.modelstack import *
+from lib.ai.modelstack import *
 
 
 

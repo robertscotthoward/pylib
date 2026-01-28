@@ -98,6 +98,11 @@ def pdf_to_text(filepath):
 
 
 def convert_doc_to_docx(inPath, outPath=None):
+    wordconv_path = r"C:\Program Files\Microsoft Office\root\Office16\Wordconv.exe"
+    if not os.path.exists(wordconv_path):
+        print(f"❌ FILE NOT FOUND: Wordconv not found at '{wordconv_path}'")
+        return None
+
     if not os.path.exists(inPath):
         print(f"Error: Source file not found at '{inPath}'")
         return None
@@ -120,7 +125,7 @@ def convert_doc_to_docx(inPath, outPath=None):
             ensureFolder(os.path.dirname(outPath))
             print(f"Converting '{inPath}' to text using docx...")
             subprocess.run([
-                r"C:\Program Files\Microsoft Office\root\Office16\Wordconv.exe",
+                wordconv_path,
                 "-oice",
                 "-nme",
                 inPath,
@@ -131,10 +136,10 @@ def convert_doc_to_docx(inPath, outPath=None):
             os.utime(outPath, (os.path.getatime(inPath), os.path.getmtime(inPath)))
            
         except FileNotFoundError:
-            print("❌ CONVERSION FAILED: 'pandoc' command not found. Ensure Pandoc is installed.")
+            print("❌ CONVERSION FAILED: 'Wordconv' command not found. Ensure Pandoc is installed.")
             return None
         except subprocess.CalledProcessError as e:
-            print(f"❌ CONVERSION FAILED: Pandoc error. Output: {e.stderr.decode()}")
+            print(f"❌ CONVERSION FAILED: Wordconv error. Output: {e.stderr.decode()}")
             return None
 
 
@@ -165,7 +170,10 @@ def docx_to_text(docx_path):
 
 
 
-if __name__ == "__main__":
-    doc_file = r"C:\Rob\RAG\Resumes, Work History, Career\2006\2003-04-23.doc"
+def test1():
+    doc_file = r"..\data\corpus1\Niven, Larry - Unfinished Story.doc"
     extracted_text = convert_doc_to_docx(doc_file)
     print(extracted_text)
+
+if __name__ == "__main__":
+    test1()

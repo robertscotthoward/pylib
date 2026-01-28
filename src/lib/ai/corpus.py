@@ -1,6 +1,6 @@
 import os
-import lib.fileconvert
-from lib.fileconvert import convert_all_doc_to_docx, docx_to_text, pdf_to_text
+import lib.ai.fileconvert
+from lib.ai.fileconvert import convert_all_doc_to_docx, docx_to_text, pdf_to_text
 from lib.tools import *
 
 
@@ -37,7 +37,7 @@ class Corpus:
         
 
     def get_text(self, filepath):
-        return lib.fileconvert.get_text(filepath)
+        return lib.ai.fileconvert.get_text(filepath)
 
 
     def convert_files(self):
