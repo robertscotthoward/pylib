@@ -34,7 +34,9 @@ uv add --editable ../../lib
 uv run python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
 ```
 
-# ====================================================================================================
+---
+
+
 # UV Template
 
 Use this process to create new Python projects in a convenient manner, such that:
