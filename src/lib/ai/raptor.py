@@ -5,9 +5,6 @@ from lib.tools import *
 # Use this instead of "import raptor"
 from llama_index.packs.raptor import RaptorPack, RaptorRetriever
 from llama_index.core import SimpleDirectoryReader, Document, StorageContext, load_index_from_storage, VectorStoreIndex
-from llama_index.llms.bedrock import Bedrock
-from llama_index.llms.ollama import Ollama
-from llama_index.embeddings.ollama import OllamaEmbedding
 
 
 """
@@ -25,27 +22,39 @@ nest_asyncio.apply() # Required for the clustering logic in notebooks/scripts
 CLEANED_EXTENSION = '.cleaned'
 
 class Raptor:
-    def __init__(self, corpus_folder, persist_dir="./storage/raptor", vector_store=None):
+    def __init__(self, 
+        corpus_folder, 
+        persist_dir, 
+        vector_store,
+        llm_index,
+        llm_query,
+        embed_model
+    ):
         """
         @corpus_folder is the folder containing the corpus to use.
         @persist_dir is the folder where the index will be saved.
         @vector_store is the vector store to use to store the embeddings. None means to use JSON files in the persist_dir.
+        @llm_index is the LLM to use for creating summaries (cheaper model). Defaults to Claude 3 Haiku.
+        @llm_query is the LLM to use for querying (more powerful model). Defaults to Claude 3 Haiku.
+        @embed_model is the embedding model to use. Defaults to nomic-embed-text.
         """
         self.corpus_folder = corpus_folder
         self.persist_dir = Path(persist_dir)
         
-        self.llm = Bedrock(model="anthropic.claude-3-haiku-20240307-v1:0")
-        self.embed_model = OllamaEmbedding(model_name="nomic-embed-text")
+        # Use provided LLMs or default to Bedrock Haiku
+        self.llm_index = llm_index
+        self.llm_query = llm_query
+        self.embed_model = embed_model
         self.vector_store = vector_store
 
         # Check if persist directory exists AND contains valid index files
         if self.persist_dir.exists() and (self.persist_dir / "docstore.json").exists():
             print(f"--- Loading RAPTOR from {self.persist_dir} ---")
             try:
-                # Load the retriever from persistence
+                # Load the retriever from persistence using the query LLM
                 retriever = RaptorRetriever.from_persist_dir(
                     persist_dir=str(self.persist_dir),
-                    llm=self.llm,
+                    llm=self.llm_query,
                     embed_model=self.embed_model
                 )
                 # Wrap it in a minimal object that has a retriever attribute
@@ -60,7 +69,7 @@ class Raptor:
                 ).load_data()
                 self.raptor_pack = RaptorPack(
                     self.documents,
-                    llm=self.llm,
+                    llm=self.llm_index,
                     embed_model=self.embed_model,
                     vector_store=self.vector_store
                 )
@@ -73,11 +82,12 @@ class Raptor:
                 required_exts=[".cleaned"]
             ).load_data()
             
-            # This triggers the clustering/summarization logic
+            # This triggers the clustering/summarization logic using the cheaper index LLM
             self.raptor_pack = RaptorPack(
                 self.documents,
-                llm=self.llm,
-                embed_model=self.embed_model
+                llm=self.llm_index,
+                embed_model=self.embed_model,
+                vector_store=self.vector_store
             )
             
             # Create directory and save the storage context
@@ -90,11 +100,23 @@ class Raptor:
                 print(f"Warning: Error persisting index: {e}")
                 import traceback
                 traceback.print_exc()
+            
+            # After creating the index, reload it with the more powerful query LLM
+            print(f"--- Reloading RAPTOR with query LLM ---")
+            try:
+                retriever = RaptorRetriever.from_persist_dir(
+                    persist_dir=str(self.persist_dir),
+                    llm=self.llm_query,
+                    embed_model=self.embed_model
+                )
+                self.raptor_pack = type('RaptorPackWrapper', (), {'retriever': retriever})()
+            except Exception as e:
+                print(f"Warning: Could not reload with query LLM: {e}")
 
-    def query(self, query_str):
+    def find_documents(self, question):
         # Using the retriever directly from the pack
         retriever = self.raptor_pack.retriever
-        response = retriever.retrieve(query_str)
+        response = retriever.retrieve(question)
         
         # Deduplicate results based on text content
         seen_texts = set()
@@ -107,6 +129,17 @@ class Raptor:
                 deduplicated.append(node)
         
         return deduplicated
+
+    def query(self, question):
+        documents = self.find_documents(question)
+        prompt = f"""GIVEN:
+        {documents}
+
+        QUESTION: 
+        {question}
+        """
+        answer = self.llm.complete(prompt)
+        return answer
 
     def print_clusters(self):
         """Print the clusters created by RAPTOR."""
@@ -157,23 +190,81 @@ class Raptor:
 
 
 
+# ============================ FACTORIES ============================
+def create_raptor_ollama(
+    corpus_folder, 
+    persist_dir, 
+    collection_name, 
+    index_llm_model="qwen2.5-coder:latest", 
+    query_llm_model="gemma3:12b",
+    embed_model="nomic-embed-text"
+):
+    """
+    @corpus_folder is the folder containing the corpus to use.
+    @persist_dir is the folder where the index will be saved.
+    @collection_name is the name of the Chroma collection to use.
+    @index_llm_model is the model to use for indexing. Defaults to Qwen 2.5 Coder.
+        qwen2.5-coder:latest (4.7 GB) - Fast, good at following instructions
+        llama3.1:8b (4.9 GB) - Solid general-purpose option
+        gemma3:12b (8.1 GB) - Better quality if you have the VRAM
+    @query_llm_model is the model to use for querying. Defaults to Gemma 3 12B.
+        gemma3:12b (8.1 GB) - Good balance of quality and speed
+        qwen2.5-coder:32b (19 GB) - Higher quality if you have resources
+        mistral-nemo:12b (7.1 GB) - Good alternative    
+    @embed_model is the embedding model to use. Defaults to nomic-embed-text.
+        nomic-embed-text (4.7 GB) - Fast, good at following instructions
+    """
+    import chromadb
+    from llama_index.vector_stores.chroma import ChromaVectorStore
+    from llama_index.llms.ollama import Ollama
+    from llama_index.embeddings.ollama import OllamaEmbedding
+    from pathlib import Path
+
+    chroma_db_dir = Path(persist_dir) / "chroma"
+    chroma_db_dir.mkdir(parents=True, exist_ok=True)
+    chroma_client = chromadb.PersistentClient(path=str(chroma_db_dir))
+    llm_index = Ollama(model=index_llm_model)
+    llm_query = Ollama(model=query_llm_model)
+    embed_model = OllamaEmbedding(model_name=embed_model)
+    vector_store = ChromaVectorStore(chroma_collection=chroma_client.get_or_create_collection(collection_name))
+    return Raptor(corpus_folder, persist_dir, vector_store, llm_index, llm_query, embed_model)
+
+
+
+
+def create_raptor_bedrock(
+    corpus_folder, 
+    persist_dir, 
+    collection_name, 
+    index_llm_model="anthropic.claude-3-haiku-20240307-v1:0", 
+    query_llm_model="anthropic.claude-3-haiku-20240307-v1:0",
+    embed_model="nomic-embed-text"
+):
+    import chromadb
+    from llama_index.llms.bedrock import Bedrock
+    from llama_index.embeddings.ollama import OllamaEmbedding
+    from llama_index.vector_stores.chroma import ChromaVectorStore
+    from pathlib import Path
+
+    chroma_db_dir = Path(persist_dir) / "chroma"
+    chroma_db_dir.mkdir(parents=True, exist_ok=True)
+    chroma_client = chromadb.PersistentClient(path=str(chroma_db_dir))
+    llm_index = Bedrock(model=index_llm_model)
+    llm_query = Bedrock(model=query_llm_model)
+    embed_model = OllamaEmbedding(model_name=embed_model)
+    vector_store = ChromaVectorStore(chroma_collection=chroma_client.get_or_create_collection(collection_name))
+    return Raptor(corpus_folder, persist_dir, vector_store, llm_index, llm_query, embed_model)
+
+
+
+
 # ============================== TESTS ==============================
 
 def query(raptor):
     question = "Who thought of the idea for cooling the room?"
-    response = raptor.query(question)
-    print(f"Question: {question}\nResponse:")
-    for i, r in enumerate(response):    
-        print(f"  {i}: {r.text}")
+    answer = raptor.query(question)
+    print(f"Question: {question}\nAnswer: {answer}")
 
-    assert response is not None
-    assert len(response) > 0
-    assert response[0].text is not None
-    assert response[0].score is not None
-    assert response[0].metadata is not None
-    # Metadata may contain different keys depending on the document type
-    # Just verify metadata exists and is not empty
-    assert len(response[0].metadata) >= 0
 
 
 

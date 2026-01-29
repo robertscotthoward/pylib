@@ -182,10 +182,20 @@ def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False
 
 
 
-def test1():
+
+# ============================== TESTS ==============================
+
+def test_convert_doc_to_docx():
     doc_file = r"..\data\corpus1\Niven, Larry - Unfinished Story.doc"
     extracted_text = convert_doc_to_docx(doc_file)
     print(extracted_text)
 
+def test_convert_pdf_to_text():
+    pdf_file = r"D:\rob\Wilmott Magazine\wilmott-202507-magazine-poulsen.pdf"
+    extracted_text = get_text(pdf_file)
+    print(extracted_text)
+
+
 if __name__ == "__main__":
-    test1()
+    # test_convert_doc_to_docx()
+    test_convert_pdf_to_text()
