@@ -4,12 +4,12 @@ a .docx file to a text file, or a .pdf file to a text file.
 """
 
 # uv add python-docx pypdf rdflib striprtf
-import subprocess
-import os
 from docx import Document
+from lib.tools import ensureFolder, readText, writeText
 import ebooklib
-from lib.tools import ensureFolder, readText
-import pypdf
+import glob
+import os
+import subprocess
 
 
 
@@ -155,7 +155,6 @@ def convert_all_doc_to_docx(folder_path):
 
 
 def transform_all_doc_to_docx(inFolder, outFolder):
-    import glob
     for filepath in glob.glob(os.path.join(inFolder, '*.doc'), recursive=True):
         convert_doc_to_docx(filepath)
 
@@ -167,6 +166,19 @@ def docx_to_text(docx_path):
     text = '\n\n'.join(p.text for p in document.paragraphs)
     return text
 
+
+
+
+def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False):
+    "For each file F in folder_path, clean F, convert F to text, and save the text to G where G = F + cleaned_extension"
+    for F in glob.glob(os.path.join(folder_path, '*.*'), recursive=True):
+        if F.endswith(cleaned_extension):
+            continue
+        G = F + cleaned_extension
+        if os.path.exists(G) and not overwrite:
+            continue
+        text = get_text(F)
+        writeText(G, text)
 
 
 
