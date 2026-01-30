@@ -165,13 +165,16 @@ def findPath(relPath, throwIfNotFound=True):
     """
     fn = os.path.basename(relPath)
     dir = os.path.dirname(relPath)
-    while not os.path.exists(os.path.join(dir, fn)):
+    while True:
+        path = os.path.abspath(os.path.join(dir, fn))
+        if os.path.exists(path):
+            return path
         dir = os.path.abspath(os.path.join(dir, os.pardir))
         if dir == os.path.abspath(os.sep):
-            if throwIfNotFound:
-                raise FileNotFoundError(f"Could not find file '{relPath}' in the folder ancestry.")
-            return None
-    return os.path.join(dir, fn)
+            break
+    if throwIfNotFound:
+        raise FileNotFoundError(f"Could not find file '{relPath}' in the folder ancestry.")
+    return None
 
 def getNewTemporaryFilePath(prefix='', suffix='.txt'):
     """

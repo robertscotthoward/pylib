@@ -4,7 +4,7 @@ from lib.tools import findPath
 
 def test_raptor_wilmott():
     corpus_folder=r"D:\rob\Wilmott Magazine"
-    lib.ai.fileconvert.all_files_to_text(corpus_folder, lib.ai.raptor.CLEANED_EXTENSION)
+    lib.ai.raptor.process_corpus(corpus_folder)
     raptor = lib.ai.raptor.create_raptor_ollama(
         corpus_folder=corpus_folder,
         persist_dir="./storage/raptor/wilmott",

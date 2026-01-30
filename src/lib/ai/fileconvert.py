@@ -169,8 +169,11 @@ def docx_to_text(docx_path):
 
 
 
-def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False):
+def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False, filter=None):
     "For each file F in folder_path, clean F, convert F to text, and save the text to G where G = F + cleaned_extension"
+    def keep(x): return True
+    if filter is None:
+        filter = keep
     for F in glob.glob(os.path.join(folder_path, '*.*'), recursive=True):
         if F.endswith(cleaned_extension):
             continue
@@ -178,7 +181,11 @@ def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False
         if os.path.exists(G) and not overwrite:
             continue
         text = get_text(F)
-        writeText(G, text)
+        if filter(text):
+            writeText(G, text)
+        else:
+            if os.path.exists(G):
+                os.remove(G)
 
 
 

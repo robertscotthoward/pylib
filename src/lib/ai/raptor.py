@@ -1,3 +1,4 @@
+import glob
 import os
 from pathlib import Path
 from lib.tools import *
@@ -5,6 +6,39 @@ from lib.tools import *
 # Use this instead of "import raptor"
 from llama_index.packs.raptor import RaptorPack, RaptorRetriever
 from llama_index.core import SimpleDirectoryReader, Document, StorageContext, load_index_from_storage, VectorStoreIndex
+
+
+
+
+# Monkey patch the GMM clustering to add regularization
+# This prevents "ill-defined covariance" errors
+def _patch_gmm_clustering():
+    """Patch the GMM clustering to use regularization."""
+    from llama_index.packs.raptor import clustering
+    from sklearn.mixture import GaussianMixture
+    import numpy as np
+    
+    original_gmm_cluster = clustering.GMM_cluster
+    
+    def patched_gmm_cluster(embeddings: np.ndarray, threshold: float, random_state: int = 0):
+        """Patched version with regularization."""
+        n_clusters = clustering.get_optimal_clusters(embeddings)
+        # Add regularization to prevent singular covariance matrices
+        gm = GaussianMixture(
+            n_components=n_clusters, 
+            random_state=random_state,
+            reg_covar=1e-4,  # Add regularization
+            covariance_type='full'
+        )
+        gm.fit(embeddings)
+        probs = gm.predict_proba(embeddings)
+        labels = [np.where(prob > threshold)[0] for prob in probs]
+        return labels, n_clusters
+    
+    clustering.GMM_cluster = patched_gmm_cluster
+
+_patch_gmm_clustering()
+
 
 
 """
@@ -24,23 +58,42 @@ CLEANED_EXTENSION = '.cleaned'
 
 
 
-def clean_documents(docs):
-    seen_text = set()
-    unique_docs = []
-    for doc in docs:
-        # Standardize text for comparison (lowercase + stripped)
-        text_content = doc.get_content().strip().lower()
-        
-        # Filter: 
-        # - Must be unique
-        # - Must have a minimum length (e.g., > 100 characters) to avoid "noise"
-        if text_content not in seen_text and len(text_content) > 100:
-            unique_docs.append(doc)
-            seen_text.add(text_content)
-    
-    print(f"Cleaned docs: {len(docs)} reduced to {len(unique_docs)}")
-    return unique_docs
+import re
 
+
+
+class FilterTextFiles:
+    def __init__(self):
+        self.seen_hash = set()
+
+    def should_keep_file(self, text):
+        # 1. Normalize: Lowercase, remove special chars, collapse whitespace
+        clean_text = re.sub(r'\W+', ' ', text).lower().strip()
+        
+        # 2. Filter by length (tokens are better than characters)
+        if len(clean_text.split()) < 20: # Example: skip if less than 20 words
+            return False
+
+        # 3. Fuzzy match check (using a simple hash of the normalized text)
+        text_hash = hash(clean_text)
+        
+        if text_hash not in self.seen_hash:
+            self.seen_hash.add(text_hash)
+            return True
+        return False
+
+
+
+
+def process_corpus(corpus_folder):
+    """
+    Ensure that all files in the corpus are converted to text, cleaned, and written to a sibling file with the extension CLEANED_EXTENSION.
+    """
+    import lib.ai.fileconvert
+    filter = FilterTextFiles()
+    def filter_func(text):
+        return filter.should_keep_file(text)
+    lib.ai.fileconvert.all_files_to_text(corpus_folder, CLEANED_EXTENSION, filter=filter_func)
 
 
 
@@ -105,9 +158,6 @@ class Raptor:
                 required_exts=[".cleaned"]
             ).load_data()
 
-            # Clean the documents
-            self.documents = clean_documents(self.documents)
-            
             # This triggers the clustering/summarization logic using the cheaper index LLM
             # Wrap in try-except to handle timeouts and other errors
             try:
@@ -122,6 +172,38 @@ class Raptor:
                     verbose=True
                 )
 
+            except ValueError as e:
+                if "ill-defined empirical covariance" in str(e) or "not positive definite" in str(e):
+                    print(f"GMM clustering error: {e}")
+                    print("Retrying with tree_depth=1 (reduced clustering)...")
+                    try:
+                        self.raptor_pack = RaptorPack(
+                            self.documents,
+                            llm=self.llm_index,
+                            embed_model=self.embed_model,
+                            vector_store=self.vector_store,
+                            similarity_top_k=2,
+                            mode="collapsed",
+                            verbose=True,
+                            tree_depth=1  # Reduce clustering depth
+                        )
+                    except (ValueError, Exception) as e2:
+                        print(f"Second attempt failed: {e2}")
+                        print("Retrying with minimal clustering (tree_depth=1, reduction_dimension=2)...")
+                        # Final attempt with minimal settings
+                        self.raptor_pack = RaptorPack(
+                            self.documents,
+                            llm=self.llm_index,
+                            embed_model=self.embed_model,
+                            vector_store=self.vector_store,
+                            similarity_top_k=2,
+                            mode="collapsed",
+                            verbose=True,
+                            tree_depth=1,
+                            reduction_dimension=2  # Minimal dimensionality
+                        )
+                else:
+                    raise
             except (TimeoutError, Exception) as e:
                 print(f"Error creating RaptorPack: {type(e).__name__}: {e}")
                 print("This may be due to:")
@@ -376,5 +458,6 @@ def test_raptor():
 
 
 if __name__ == "__main__":
+    process_corpus(findPath("data/corpus1"))
     test_with_chroma_store()
     #test_raptor()
