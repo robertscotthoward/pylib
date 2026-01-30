@@ -21,6 +21,29 @@ nest_asyncio.apply() # Required for the clustering logic in notebooks/scripts
 # The extension of the cleaned files. When a document is read, it is converted to a text file, cleaned of all metadata and strange characters, and saved with this extension.
 CLEANED_EXTENSION = '.cleaned'
 
+
+
+
+def clean_documents(docs):
+    seen_text = set()
+    unique_docs = []
+    for doc in docs:
+        # Standardize text for comparison (lowercase + stripped)
+        text_content = doc.get_content().strip().lower()
+        
+        # Filter: 
+        # - Must be unique
+        # - Must have a minimum length (e.g., > 100 characters) to avoid "noise"
+        if text_content not in seen_text and len(text_content) > 100:
+            unique_docs.append(doc)
+            seen_text.add(text_content)
+    
+    print(f"Cleaned docs: {len(docs)} reduced to {len(unique_docs)}")
+    return unique_docs
+
+
+
+
 class Raptor:
     def __init__(self, 
         corpus_folder, 
@@ -81,14 +104,31 @@ class Raptor:
                 recursive=True,
                 required_exts=[".cleaned"]
             ).load_data()
+
+            # Clean the documents
+            self.documents = clean_documents(self.documents)
             
             # This triggers the clustering/summarization logic using the cheaper index LLM
-            self.raptor_pack = RaptorPack(
-                self.documents,
-                llm=self.llm_index,
-                embed_model=self.embed_model,
-                vector_store=self.vector_store
-            )
+            # Wrap in try-except to handle timeouts and other errors
+            try:
+                print(f"Initializing RaptorPack with {len(self.documents)} documents...")
+                self.raptor_pack = RaptorPack(
+                    self.documents,
+                    llm=self.llm_index,
+                    embed_model=self.embed_model,
+                    vector_store=self.vector_store,
+                    similarity_top_k=2,
+                    mode="collapsed",
+                    verbose=True
+                )
+
+            except (TimeoutError, Exception) as e:
+                print(f"Error creating RaptorPack: {type(e).__name__}: {e}")
+                print("This may be due to:")
+                print("  1. Ollama models not running or not responding")
+                print("  2. Network timeout - try increasing the timeout parameter")
+                print("  3. Insufficient system resources")
+                raise
             
             # Create directory and save the storage context
             self.persist_dir.mkdir(parents=True, exist_ok=True)
@@ -138,7 +178,7 @@ class Raptor:
         QUESTION: 
         {question}
         """
-        answer = self.llm.complete(prompt)
+        answer = self.llm_query.complete(prompt)
         return answer
 
     def print_clusters(self):
@@ -197,7 +237,8 @@ def create_raptor_ollama(
     collection_name, 
     index_llm_model="qwen2.5-coder:latest", 
     query_llm_model="gemma3:12b",
-    embed_model="nomic-embed-text"
+    embed_model="nomic-embed-text",
+    timeout=300.0
 ):
     """
     @corpus_folder is the folder containing the corpus to use.
@@ -213,6 +254,7 @@ def create_raptor_ollama(
         mistral-nemo:12b (7.1 GB) - Good alternative    
     @embed_model is the embedding model to use. Defaults to nomic-embed-text.
         nomic-embed-text (4.7 GB) - Fast, good at following instructions
+    @timeout is the timeout in seconds for HTTP requests to Ollama. Defaults to 300 seconds (5 minutes).
     """
     import chromadb
     from llama_index.vector_stores.chroma import ChromaVectorStore
@@ -223,9 +265,12 @@ def create_raptor_ollama(
     chroma_db_dir = Path(persist_dir) / "chroma"
     chroma_db_dir.mkdir(parents=True, exist_ok=True)
     chroma_client = chromadb.PersistentClient(path=str(chroma_db_dir))
-    llm_index = Ollama(model=index_llm_model)
-    llm_query = Ollama(model=query_llm_model)
-    embed_model = OllamaEmbedding(model_name=embed_model)
+    
+    # Create Ollama clients with extended timeout for local model inference
+    llm_index = Ollama(model=index_llm_model, request_timeout=timeout)
+    llm_query = Ollama(model=query_llm_model, request_timeout=timeout)
+    embed_model = OllamaEmbedding(model_name=embed_model, request_timeout=timeout)
+    
     vector_store = ChromaVectorStore(chroma_collection=chroma_client.get_or_create_collection(collection_name))
     return Raptor(corpus_folder, persist_dir, vector_store, llm_index, llm_query, embed_model)
 
@@ -276,21 +321,22 @@ def test_with_chroma_store():
     collection_name = "chroma_test"
     persist_dir = f"./storage/raptor/{collection_name}"
     
-    # Create a persistent Chroma client that stores in the same persist_dir
-    chroma_db_dir = Path(persist_dir) / "chroma"
-    chroma_db_dir.mkdir(parents=True, exist_ok=True)
-    
-    chroma_client = chromadb.PersistentClient(path=str(chroma_db_dir))
-    vector_store = ChromaVectorStore(chroma_collection=chroma_client.get_or_create_collection(collection_name))
-    
     corpus_folder = findPath("data/corpus1")
     if corpus_folder is None:
         raise FileNotFoundError(f"Could not find corpus folder 'data/corpus1'")
 
     lib.ai.fileconvert.all_files_to_text(corpus_folder, CLEANED_EXTENSION)
-
     corpus_folder = os.path.abspath(corpus_folder)
-    raptor = Raptor(corpus_folder, persist_dir=persist_dir, vector_store=vector_store)
+    
+    # Use the factory function to create raptor with Ollama
+    raptor = create_raptor_ollama(
+        corpus_folder=corpus_folder,
+        persist_dir=persist_dir,
+        collection_name=collection_name,
+        index_llm_model="qwen2.5-coder:latest",
+        query_llm_model="gemma3:12b",
+        embed_model="nomic-embed-text"
+    )
     query(raptor)
     print(f"All files saved to: {persist_dir}")
 
@@ -300,11 +346,21 @@ def test_with_chroma_store():
 def test_raptor_with_default_json_store():
     import lib.ai.fileconvert
     corpus_folder = findPath("data/corpus1")
-    lib.ai.fileconvert.all_files_to_text(corpus_folder, CLEANED_EXTENSION)
     if corpus_folder is None:
         raise FileNotFoundError(f"Could not find corpus folder 'data/corpus1'")
+    
+    lib.ai.fileconvert.all_files_to_text(corpus_folder, CLEANED_EXTENSION)
     corpus_folder = os.path.abspath(corpus_folder)
-    raptor = Raptor(corpus_folder)
+    
+    # Use the factory function to create raptor with Ollama
+    raptor = create_raptor_ollama(
+        corpus_folder=corpus_folder,
+        persist_dir="./storage/raptor/default_json_store",
+        collection_name="default_json_store",
+        index_llm_model="qwen2.5-coder:latest",
+        query_llm_model="gemma3:12b",
+        embed_model="nomic-embed-text"
+    )
     raptor.print_clusters()
     raptor.print_hierarchy()
     query(raptor)

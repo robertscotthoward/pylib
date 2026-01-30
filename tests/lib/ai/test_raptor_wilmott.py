@@ -1,15 +1,22 @@
 import lib.ai.raptor
+import lib.ai.fileconvert
 from lib.tools import findPath
 
 def test_raptor_wilmott():
+    corpus_folder=r"D:\rob\Wilmott Magazine"
+    lib.ai.fileconvert.all_files_to_text(corpus_folder, lib.ai.raptor.CLEANED_EXTENSION)
     raptor = lib.ai.raptor.create_raptor_ollama(
-        corpus_folder=r"D:\rob\Wilmott Magazine",
+        corpus_folder=corpus_folder,
         persist_dir="./storage/raptor/wilmott",
-        collection_name="willmott",
+        collection_name="wilmott",
         index_llm_model="qwen2.5-coder:latest",
         query_llm_model="gemma3:12b",
-        embed_model="nomic-embed-text"
+        embed_model="nomic-embed-text",
+        timeout=600.0  # 10 minutes timeout for Ollama inference
     )
+
+    answer = raptor.query("What do many sign errors stem from?")
+    print(answer)
 
 
 
