@@ -14,28 +14,9 @@ from llama_index.core import (
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
+from lib.ai.orchestration import *
 
 
-class RagBase:
-    """Base class for RAG (Retrieval-Augmented Generation) systems."""
-
-    def find_documents(self, question: str) -> List[Document]:
-        """Return a list of documents that are relevant to the question."""
-        raise NotImplementedError("Subclasses must implement this method.")
-
-    def query(self, question: str) -> str:
-        """Return a response to the question based on the relevant documents."""
-        raise NotImplementedError("Subclasses must implement this method.")
-
-    def index(self, documents: List[Document], rebuild: bool = False) -> None:
-        """
-        Index the documents into the vector store.
-        
-        Args:
-            documents: List of documents to index
-            rebuild: If True, rebuild the index from scratch; else add to existing index
-        """
-        raise NotImplementedError("Subclasses must implement this method.")
 
 
 class LlamaIndexRAG(RagBase):
@@ -72,6 +53,7 @@ class LlamaIndexRAG(RagBase):
         self.storage_context = StorageContext.from_defaults(vector_store=vector_store)
         self._index = None
 
+
     def find_documents(self, question: str) -> List[Document]:
         """
         Find documents relevant to the question.
@@ -84,6 +66,7 @@ class LlamaIndexRAG(RagBase):
         retriever = self._index.as_retriever(similarity_top_k=5)
         results = retriever.retrieve(question)
         return [result.node for result in results]
+
 
     def query(self, question: str) -> str:
         """
@@ -118,61 +101,119 @@ Answer:"""
         response = self.llm.complete(prompt)
         return str(response)
 
+
     def index(self, documents: List[Document], rebuild: bool = False) -> None:
         """
         Index documents into the vector store.
         @documents: List of documents to index
         @rebuild: If True, rebuild from scratch; else add to existing
         """
-        if rebuild or self._index is None:
-            # Create a new VectorStoreIndex from documents
-            print(f"Creating VectorStoreIndex with {len(documents)} documents...")
-            self._index = VectorStoreIndex.from_documents(
-                documents,
-                storage_context=self.storage_context,
-                embed_model=self.embed_model,
-            )
-            print("Index created successfully!")
-        else:
-            # Add documents to existing index
-            print(f"Adding {len(documents)} documents to existing index...")
-            for doc in documents:
-                self._index.insert(doc)
-            print("Documents added successfully!")
+        try:
+            if rebuild or self._index is None:
+                # Create a new VectorStoreIndex from documents
+                print(f"Creating VectorStoreIndex with {len(documents)} documents...")
+                self._index = VectorStoreIndex.from_documents(
+                    documents,
+                    storage_context=self.storage_context,
+                    embed_model=self.embed_model,
+                    show_progress=True,
+                )
+                print("Index created successfully!")
+            else:
+                # Add documents to existing index
+                print(f"Adding {len(documents)} documents to existing index...")
+                for i, doc in enumerate(documents, 1):
+                    file_path = doc.metadata.get('file_path', 'unknown')
+                    print(f"  ✓ [{i:3d}/{len(documents)}] {file_path}")
+                    self._index.insert(doc)
+                print("Documents added successfully!")
+        except Exception as e:
+            print(f"Error during indexing: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
+    def _load_existing_index(self) -> None:
+        """
+        Load an existing index from the vector store.
+        @returns: None (sets self._index)
+        """
+        try:
+            if self._index is None:
+                print("Loading existing VectorStoreIndex from storage...")
+                self._index = VectorStoreIndex.from_vector_store(
+                    vector_store=self.vector_store,
+                    embed_model=self.embed_model,
+                )
+                print("Index loaded successfully!")
+        except Exception as e:
+            print(f"Error loading existing index: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+
+
+
+# ============================== TESTS ==============================
 
 def test_llamaindex():
+    pass
+
+def test_with_chroma_store():
     """Test the LlamaIndex RAG implementation with local Ollama models."""
     import chromadb
+    from pathlib import Path
 
-    # Setup Chroma
+    # Setup Chroma with persistence
     collection_name = "test_collection"
-    chroma_client = chromadb.EphemeralClient()
-    chroma_collection = chroma_client.get_or_create_collection(collection_name)
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+    persist_dir = Path("./storage/chroma/llamaindex_test")
+    persist_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Created persist directory: {persist_dir.absolute()}")
+    
+    try:
+        chroma_client = chromadb.PersistentClient(path=str(persist_dir))
+        print(f"Chroma client created successfully")
+        
+        chroma_collection = chroma_client.get_or_create_collection(collection_name)
+        print(f"Chroma collection '{collection_name}' created/loaded")
+        
+        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+        print(f"ChromaVectorStore initialized")
 
-    # Create RAG instance with Ollama models
-    rag = LlamaIndexRAG(
-        collection_name,
-        vector_store,
-        llm_model="gemma3:12b",
-        embed_model_name="nomic-embed-text",
-    )
+        # Create RAG instance with Ollama models
+        rag = LlamaIndexRAG(
+            collection_name,
+            vector_store,
+            llm_model="gemma3:12b",
+            embed_model_name="nomic-embed-text",
+        )
+        print(f"LlamaIndexRAG instance created")
 
-    # Create sample documents
-    sample_docs = [
-        Document(text="The capital of France is Paris."),
-        Document(text="The capital of Germany is Berlin."),
-        Document(text="The capital of Italy is Rome."),
-    ]
+        # Create sample documents
+        sample_docs = [
+            Document(text="The capital of France is Paris."),
+            Document(text="The capital of Germany is Berlin."),
+            Document(text="The capital of Italy is Rome."),
+        ]
+        print(f"Created {len(sample_docs)} sample documents")
 
-    # Index documents
-    rag.index(sample_docs, rebuild=True)
+        # Index documents
+        print("Indexing documents...")
+        rag.index(sample_docs, rebuild=True)
 
-    # Query
-    response = rag.query("What is the capital of France?")
-    print(f"Response: {response}")
+        # Query
+        print("Querying index...")
+        response = rag.query("What is the capital of France?")
+        print(f"Response: {response}")
+        print(f"\nDatabase persisted to: {persist_dir.absolute()}")
+        
+    except Exception as e:
+        print(f"Error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
+    test_with_chroma_store()
     test_llamaindex()

@@ -146,7 +146,7 @@ if __name__ == "__main__":
     vdb_type = "numpy"
     corpus_folder = os.path.abspath(fr"C:\Rob\GitHub\robertscotthoward\python-ollama-example\data\test\{vdb_type}\{collection_name}")
     collection_path = os.path.abspath(f"data/vdb/{vdb_type}/{collection_name}")
-    from lib.splitter import RecursiveCharacterText_Splitter
+    from lib.ai.splitter import RecursiveCharacterText_Splitter
     splitter = RecursiveCharacterText_Splitter(chunk_size=1000, chunk_overlap=200)
     vdb = NumpyVectorDb(corpus_folder, splitter, collection_path)
 

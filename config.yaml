@@ -1,0 +1,9 @@
+environments:
+  prod:
+    test:
+      environment_variable: OSTYPE=linux-gnu
+    port: 80
+  local:
+    test:
+      environment_variable: "HOMEDRIVE=C:"
+    port: 5000

@@ -51,49 +51,7 @@ If any file in the corpus changes, the index must be regenerated in total since 
 
 import nest_asyncio
 nest_asyncio.apply() # Required for the clustering logic in notebooks/scripts
-
-# The extension of the cleaned files. When a document is read, it is converted to a text file, cleaned of all metadata and strange characters, and saved with this extension.
-CLEANED_EXTENSION = '.cleaned'
-
-
-
-
 import re
-
-
-
-class FilterTextFiles:
-    def __init__(self):
-        self.seen_hash = set()
-
-    def should_keep_file(self, text):
-        # 1. Normalize: Lowercase, remove special chars, collapse whitespace
-        clean_text = re.sub(r'\W+', ' ', text).lower().strip()
-        
-        # 2. Filter by length (tokens are better than characters)
-        if len(clean_text.split()) < 20: # Example: skip if less than 20 words
-            return False
-
-        # 3. Fuzzy match check (using a simple hash of the normalized text)
-        text_hash = hash(clean_text)
-        
-        if text_hash not in self.seen_hash:
-            self.seen_hash.add(text_hash)
-            return True
-        return False
-
-
-
-
-def process_corpus(corpus_folder):
-    """
-    Ensure that all files in the corpus are converted to text, cleaned, and written to a sibling file with the extension CLEANED_EXTENSION.
-    """
-    import lib.ai.fileconvert
-    filter = FilterTextFiles()
-    def filter_func(text):
-        return filter.should_keep_file(text)
-    lib.ai.fileconvert.all_files_to_text(corpus_folder, CLEANED_EXTENSION, filter=filter_func)
 
 
 
@@ -344,7 +302,7 @@ def create_raptor_ollama(
     from llama_index.embeddings.ollama import OllamaEmbedding
     from pathlib import Path
 
-    chroma_db_dir = Path(persist_dir) / "chroma"
+    chroma_db_dir = Path(persist_dir) / collection_name
     chroma_db_dir.mkdir(parents=True, exist_ok=True)
     chroma_client = chromadb.PersistentClient(path=str(chroma_db_dir))
     
@@ -373,7 +331,7 @@ def create_raptor_bedrock(
     from llama_index.vector_stores.chroma import ChromaVectorStore
     from pathlib import Path
 
-    chroma_db_dir = Path(persist_dir) / "chroma"
+    chroma_db_dir = Path(persist_dir) / collection_name
     chroma_db_dir.mkdir(parents=True, exist_ok=True)
     chroma_client = chromadb.PersistentClient(path=str(chroma_db_dir))
     llm_index = Bedrock(model=index_llm_model)

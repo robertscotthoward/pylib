@@ -31,7 +31,7 @@ These workflows allow you to toggle between active development using local edita
 ```
 Create a project folder (project1).
 uv init --python 3.13
-uv add --editable ../../lib
+uv add --editable ../pylib
 
 # Test:
 uv run python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
@@ -78,6 +78,11 @@ git tag
 
 # List remote tags:
 git ls-remote --tags origin
+```
+
+# Install all files from another toml file:
+```
+uv pip install -r "C:\Rob\GitHub\robertscotthoward\python\playground\make-jupyter\pyproject.toml"
 ```
 
 ---

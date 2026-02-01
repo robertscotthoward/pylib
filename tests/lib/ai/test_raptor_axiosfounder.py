@@ -2,30 +2,30 @@ from pathlib import Path
 from lib.tools import findPath
 
 
-def test_raptor_wilmott():
+def test_raptor_axiosfounder():
     from lib.ai.raptor import process_corpus
     from lib.ai.raptor import create_raptor_ollama
-    corpus_folder=r"D:\rob\Wilmott Magazine"
+    corpus_folder=r"C:\Rob\GitHub\robertscotthoward\youtube-tools\cache\channels\axiomfounder"
     process_corpus(corpus_folder)
     raptor = create_raptor_ollama(
         corpus_folder=corpus_folder,
-        persist_dir="./storage/raptor/wilmott",
-        collection_name="wilmott",
+        persist_dir="./storage/raptor/axiosfounder",
+        collection_name="axiosfounder",
         index_llm_model="qwen2.5-coder:latest",
         query_llm_model="gemma3:12b",
         embed_model="nomic-embed-text",
         timeout=600.0  # 10 minutes timeout for Ollama inference
     )
 
-    answer = raptor.query("What do many sign errors stem from?")
+    answer = raptor.query("Create a checklist for building a startup.")
     print(answer)
 
 
-def test_ollama_index_wilmott():
+def make_axiosfounder_rag():
     from lib.ai.orchestration import create_local_rag, process_corpus
     
-    corpus_folder = findPath("D:\\rob\Wilmott Magazine")
-    collection_name = "wilmott"
+    corpus_folder=r"C:\Rob\GitHub\robertscotthoward\youtube-tools\cache\channels\axiomfounder"
+    collection_name = "axiomfounder"
     persist_dir = Path(r"D:\rob\rag\vectordb\rob\chroma")
     persist_dir.mkdir(parents=True, exist_ok=True)
 
@@ -36,7 +36,12 @@ def test_ollama_index_wilmott():
         persist_dir=persist_dir,
         corpus_folder=corpus_folder,
     )
-    answer = rag.query("What do many sign errors stem from?")
+    return rag
+
+
+def test_ollama_index_axiosfounder():
+    rag = make_axiosfounder_rag()
+    answer = rag.query("Create a checklist for building a startup.")
     print(answer)
     
 
@@ -44,5 +49,4 @@ def test_ollama_index_wilmott():
 
 
 if __name__ == "__main__":
-    # test_raptor_wilmott()
-    test_ollama_index_wilmott()
+    test_ollama_index_axiosfounder()

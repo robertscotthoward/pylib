@@ -1,4 +1,5 @@
 from lib.ai.modelstack import *
+from lib.tools import *
 
 
 
@@ -55,7 +56,7 @@ class Rag:
             print(f"[DEBUG] Already embedded: {len(embedded_filenames)} files")
             
             # Get list of all files in corpus
-            from lib.corpus import Corpus
+            from lib.ai.corpus import Corpus
             corpus = Corpus()
             all_files = list(corpus.enumerate_files(self.corpus_folder))
             
@@ -105,7 +106,7 @@ CONTEXT: {context}
 
 
 if __name__ == "__main__":
-    from lib.vectordb_common import make_vectordb
+    from lib.ai.vectordb_common import make_vectordb
     collection_name = "corpus1"
     vdb_type = "numpy"
     corpus_folder = os.path.abspath(fr"C:\Rob\GitHub\robertscotthoward\python-ollama-example\data\test\{collection_name}")
