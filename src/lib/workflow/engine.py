@@ -29,9 +29,11 @@ def sample_callback(engine, transition):
 
 
 class Engine(object):
-    def LoadEngine(filepath):
+    def LoadEngine(filepath, callback=sample_callback):
         engine_state = getYaml(filepath)
-        return Engine(engine_state['config'], engine_state['environment'], engine_state['callback'])
+        engine = Engine(engine_state['config'], engine_state['environment'], callback)
+        engine.set_state(engine_state['last_state'])
+        return engine
     
     def __init__(self, config, environment={}, callback=sample_callback):
         """
@@ -61,17 +63,25 @@ class Engine(object):
         self.set_state(last_state)
 
     def save_states(self, filepath):
-        # Create a clean copy of config without the custom attributes added to states
-        clean_config = {
-            'states': {}
-        }
-        for state_id, state in self.config['states'].items():
-            # Create a new dict with only the original keys (remove custom attributes like .id, .start_time, etc.)
-            clean_state = {}
-            for key, value in state.items():
-                if key not in ['id', 'start_time', 'end_time', 'duration']:
-                    clean_state[key] = value
-            clean_config['states'][state_id] = clean_state
+        # Helper function to recursively clean custom attributes from nested dicts
+        def clean_dict(obj):
+            """Remove custom attributes (id, start_time, end_time, duration) from dict and nested dicts."""
+            if isinstance(obj, dict):
+                cleaned = {}
+                for key, value in obj.items():
+                    # Skip custom runtime attributes
+                    if key in ['id', 'start_time', 'end_time', 'duration']:
+                        continue
+                    # Recursively clean nested dicts and lists
+                    cleaned[key] = clean_dict(value)
+                return cleaned
+            elif isinstance(obj, list):
+                return [clean_dict(item) for item in obj]
+            else:
+                return obj
+        
+        # Create a clean copy of config
+        clean_config = clean_dict(self.config)
         
         engine_state = {
             'config': clean_config,

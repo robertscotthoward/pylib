@@ -1,0 +1,35 @@
+config:
+  states:
+    start:
+      name: Start
+      process: null
+      transitions:
+        'on':
+          when:
+            switch: true
+          state: 'on'
+        'off':
+          when:
+            switch: false
+          state: 'off'
+    'on':
+      name: 'On'
+      process:
+      - run: light_on
+      transitions:
+        'off':
+          when:
+            switch: false
+          state: 'off'
+    'off':
+      name: 'Off'
+      process:
+      - run: light_off
+      transitions:
+        'on':
+          when:
+            switch: true
+          state: 'on'
+environment:
+  switch: false
+last_state: 'off'
