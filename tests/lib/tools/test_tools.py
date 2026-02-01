@@ -38,4 +38,32 @@ def test_getNewTemporaryFilePath():
 def test_spy():
     with Spy("Spy Test") as spy:
         time.sleep(1)
+
+
+def test_to_seconds():
+    assert to_seconds('1s') == 1
+    assert to_seconds('1m') == 60
+    assert to_seconds('1h') == 3600
+    assert to_seconds('1d') == 86400
+    assert to_seconds('2d3h4m5s') == 183845
+    assert to_seconds('2d5s') == 172805
+    assert to_seconds(1) == 1
+    assert to_seconds(1.0) == 1.0
+    assert to_seconds('1') == 1
+    assert to_seconds('1.0') == 1.0
+    assert to_seconds('1.0s') == 1.0
+    assert to_seconds('1.0m') == 60.0
+    assert to_seconds('1.0h') == 3600.0
+    assert to_seconds('1.5h') == 5400.0
+    assert to_seconds('1.0d') == 86400.0
+    assert to_seconds('1.0w') == 604800.0
+    assert to_seconds('1.0mo') == 2629746.0
+    assert to_seconds('1.0y') == 86400.0
+    assert to_seconds('1.0s1m') == 61.0
+    assert to_seconds('1.0m1h') == 3660.0
         
+
+
+
+if __name__ == "__main__":
+    test_to_seconds()

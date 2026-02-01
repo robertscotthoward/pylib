@@ -18,6 +18,44 @@ from ruamel.yaml import YAML
 # H E L P E R   F U N C T I O N S
 
 
+def to_seconds(s):
+    if isinstance(s, float):
+        return s
+    if isinstance(s, int):
+        return s
+    if isinstance(s, str):
+        s = s.strip()
+        if is_float(s):
+            return float(s)
+        seconds = 0
+        while True:
+            # For all regex matches of an integer followed by a string of characters, return the integer.
+            re = getRegex(r"(?P<N>\d+(\.\d+)?)(?P<U>[^\d]+)")
+            match = re.match(s)
+            if match:
+                n = float(match.group("N"))
+                u = match.group("U").lower()
+                if u in ['s', 'sec', 'secs', 'second', 'seconds']:
+                    seconds += n
+                elif u in ['m', 'min', 'mins', 'minute', 'minutes']:
+                    seconds += 60 * n
+                elif u in ['h', 'hr', 'hrs', 'hour', 'hours']:
+                    seconds += 3600 * n
+                elif u in ['d', 'day', 'days']:
+                    seconds += 86400 * n
+                elif u in ['w', 'week', 'weeks']:
+                    seconds += 604800 * n
+                elif u in ['mo', 'month', 'months']:
+                    seconds += 2629746 * n
+                elif u in ['y', 'year', 'years']:
+                    seconds += 86400 * n
+                s = s.replace(match.group(0), '', 1)
+            else:
+                break
+        return seconds
+    return 0
+
+
 def is_low_memory(threshold_percent=85):
     import psutil
     # Get memory statistics
@@ -596,6 +634,20 @@ def to_float(s):
     if s == None:
         return 0.0
     return float(s)
+
+def is_float(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+def is_int(s):
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
 
 def to_string(o):
     if o == None:

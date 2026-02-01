@@ -203,6 +203,18 @@ def test_restore_engine_state():
     assert engine.environment['switch'] == False
 
 
+
+def test_engine_delay():
+    states = """
+    start:
+      transitions:
+        next:
+          when:
+            elapsed: 
+          state: start
+    """
+
+
 if __name__ == "__main__":
     test_light_switch()
     test_restore_engine_state()
