@@ -53,8 +53,8 @@ class Engine(object):
     def set_state(self, state_id):
         self.current_state = state_id
         state = self.states[state_id]
-        state.id = state_id
-        state.start_time = time.time()
+        state['id'] = state_id
+        state['start_time'] = time.time()
         self.process_state(state)
 
     def load_states(self, filepath):
@@ -86,15 +86,18 @@ class Engine(object):
         engine_state = {
             'config': clean_config,
             'environment': self.environment,
-            'last_state': self.get_current_state().id,
+            'last_state': self.get_current_state()['id'],
         }
         writeYaml(filepath, engine_state)
 
 
     def process_state(self, state):
-        self.callback(self, None)
-        state.end_time = time.time()
-        state.duration = state.end_time - state.start_time
+        if self.callback:
+            newState = self.callback(self, state)
+            if newState:
+                state = newState
+        state['end_time'] = time.time()
+        state['duration'] = state['end_time'] - state['start_time']
         return state
 
 
@@ -113,6 +116,12 @@ class Engine(object):
             if 'when' in transition:
                 all = True
                 for wk, wv in transition['when'].items():
+                    if wk == 'elapsed':
+                        if time.time() - state['start_time'] >= to_seconds(wv):
+                            continue
+                        else:
+                            all = False
+                            break
                     if wk not in self.environment:
                         continue
                     if self.environment[wk] != wv:
@@ -168,29 +177,29 @@ def test_light_switch():
 
 
     engine = Engine(config['light-switch'], environment, callback)
-    assert engine.get_current_state().id == 'start'
+    assert engine.get_current_state()['id'] == 'start'
     assert engine.environment['switch'] == False
 
     # Someone flips the switch to on.
     environment['switch'] = True
     engine.tick()
-    assert engine.get_current_state().id == 'on'
+    assert engine.get_current_state()['id'] == 'on'
 
     # Someone flips the switch to on again, even though it's already on.
     environment['switch'] = True
     engine.tick()
-    assert engine.get_current_state().id == 'on'
+    assert engine.get_current_state()['id'] == 'on'
     assert engine.environment['switch'] == True
 
     # Nothing changed.
     engine.tick()
-    assert engine.get_current_state().id == 'on'
+    assert engine.get_current_state()['id'] == 'on'
     assert engine.environment['switch'] == True
 
     # Someone flips the switch to off.
     environment['switch'] = False
     engine.tick()
-    assert engine.get_current_state().id == 'off'
+    assert engine.get_current_state()['id'] == 'off'
     assert engine.environment['switch'] == False
 
     engine.save_states('tests/data/workflows/light-switch-engine-state.yaml')
@@ -199,22 +208,29 @@ def test_light_switch():
 
 def test_restore_engine_state():
     engine = Engine.LoadEngine('tests/data/workflows/light-switch-engine-state.yaml')
-    assert engine.get_current_state().id == 'off'
+    assert engine.get_current_state()['id'] == 'off'
     assert engine.environment['switch'] == False
 
 
 
 def test_engine_delay():
     states = """
-    start:
-      transitions:
-        next:
-          when:
-            elapsed: 
-          state: start
+    states:
+      start:
+        transitions:
+          next:
+            when:
+              elapsed: 2s
+            state: start
     """
+    config = parseYaml(states)
+    engine = Engine(config, environment={}, callback=None)
+    engine.tick()
+    time.sleep(2)
+    engine.tick()
 
 
 if __name__ == "__main__":
+    test_engine_delay()
     test_light_switch()
     test_restore_engine_state()

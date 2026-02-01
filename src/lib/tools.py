@@ -129,6 +129,9 @@ def readYaml(file):
     with open(file) as f:
         return yaml.safe_load(f)
 
+def parseYaml(text):
+    return yaml.safe_load(text)
+
 def writeYaml(file, data):
     with open(file, "w", encoding="utf-8") as f:
         yaml.dump(
