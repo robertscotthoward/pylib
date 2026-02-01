@@ -7,11 +7,11 @@ light-switch:
       process:
         # What the start executes when a transition to it is triggered.
       transitions:
-        - trigger: on
+        on: 
           when:
             switch: True
           state: on
-        - trigger: off
+        off:
           when:
             switch: False
           state: off
@@ -20,7 +20,7 @@ light-switch:
       process:
         - run: light_on
       transitions:
-        - trigger: off
+        off:
           when:
             switch: False
           state: off
@@ -29,7 +29,7 @@ light-switch:
       process:
         - run: light_off
       transitions:
-        - trigger: on
+        on:
           when:
             switch: True
           state: on
