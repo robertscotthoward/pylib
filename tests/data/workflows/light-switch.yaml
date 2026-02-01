@@ -1,0 +1,35 @@
+# A state is a piece of code that is executed when a transition to it is triggered.
+# Then the workflow stays in that state until a transition to another state is triggered.
+light-switch:
+  states:
+    start:
+      name: Start
+      process:
+        # What the start executes when a transition to it is triggered.
+      transitions:
+        - trigger: on
+          when:
+            switch: True
+          state: on
+        - trigger: off
+          when:
+            switch: False
+          state: off
+    on:
+      name: On
+      process:
+        - run: light_on
+      transitions:
+        - trigger: off
+          when:
+            switch: False
+          state: off
+    off:
+      name: Off
+      process:
+        - run: light_off
+      transitions:
+        - trigger: on
+          when:
+            switch: True
+          state: on
