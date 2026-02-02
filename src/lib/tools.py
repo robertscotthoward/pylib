@@ -259,6 +259,8 @@ def getYaml(relPath):
     Search up the folder ancestry for a configuration file of name '{relPath}.json'
     and return that as an object.
     Throws FileNotFoundError if the file is not found.
+    INCLUDE:
+      - person: INCLUDEFILE(data/person.yaml)
     """
     re = getRegex(r"INCLUDEFILE\((?P<A>.+)\)")
 
@@ -290,7 +292,7 @@ def getYaml(relPath):
     return o
 
 
-def md5(s):
+def md5(s): 
   import hashlib
   hash = hashlib.md5()
   if type(s) == str:

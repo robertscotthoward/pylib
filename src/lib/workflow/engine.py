@@ -29,23 +29,25 @@ def sample_callback(engine, transition):
 
 
 class Engine(object):
-    def LoadEngine(filepath, callback=sample_callback):
+    def LoadEngine(filepath, callback=sample_callback, trace=None):
         engine_state = getYaml(filepath)
-        engine = Engine(engine_state['config'], engine_state['environment'], callback)
+        engine = Engine(engine_state['config'], engine_state['environment'], callback, trace)
         engine.set_state(engine_state['last_state'])
         return engine
     
-    def __init__(self, config, environment={}, callback=sample_callback):
+    def __init__(self, config, environment={}, callback=sample_callback, trace=None):
         """
         @config: A dictionary containing the workflow configuration.
         @environment: A dictionary containing the environment variables.
         @callback: A function that is called when a transition is triggered.
+        @trace: A function(string) that is called to trace the engine.
         """
         self.callback = callback
         self.environment = environment
         self.config = config
         self.states = config['states']
         self.set_state('start')
+        self.trace = trace
 
     def get_current_state(self):
         return self.states[self.current_state]

@@ -57,6 +57,14 @@ def get_environment(config='config'):
 
 
 
+def get_config(config_path='config.yaml'):
+    config = getYaml(config_path)
+    env, environment = get_environment(config)
+    a = g(config, 'all', {})
+    c = g(config, env, {})
+    return {**a, **c}
+
+
 
 def test1():
     s = """
