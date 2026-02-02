@@ -28,6 +28,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "rdflib>=7.5.0",
     "requests>=2.32.5",
+    "rerankers[transformers]>=0.10.0",
     "ruamel-yaml>=0.19.1",
     "striprtf>=0.0.29",
     "xhtml2pdf>=0.2.17",
