@@ -18,6 +18,11 @@ from ruamel.yaml import YAML
 # H E L P E R   F U N C T I O N S
 
 
+def strip_lines(s):
+    # For each line in s, strip the line and return the result.
+    return '\n'.join([line.strip() for line in s.split('\n')])
+    
+
 def to_seconds(s):
     if isinstance(s, float):
         return s
