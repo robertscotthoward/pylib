@@ -36,15 +36,20 @@ class ChromaVectorDb(VectorDb):
             persist_directory=self.collection_dir
         ))
         
-        # Get or create the collection with the specified embedding function
+        # Get or create the collection
+        # Note: ChromaDB doesn't allow changing embedding functions for existing collections
+        # So we only specify the embedding function when creating new collections
         if self.collection_name:
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                embedding_function=self.embedding_function
-            )
-            if self.collection.count():
+            try:
+                # Try to get existing collection (without specifying embedding function)
+                self.collection = self.client.get_collection(name=self.collection_name)
                 print(f"Collection {self.collection_name} loaded with {self.collection.count()} entries.")
-            else:
+            except:
+                # Collection doesn't exist, create it with the specified embedding function
+                self.collection = self.client.create_collection(
+                    name=self.collection_name,
+                    embedding_function=self.embedding_function
+                )
                 print(f"Collection {self.collection_name} created.")
     
     
@@ -56,6 +61,12 @@ class ChromaVectorDb(VectorDb):
                 ids=self.chunk_batch['ids']
             )
             self.chunk_batch = None
+
+
+
+
+    def load_corpus(self, last_updated=0):
+        super().load_corpus(last_updated)
 
 
 
@@ -242,4 +253,22 @@ GROUP BY filename
 
 
 
+def test1():
+    import shutil
+    collection_path = "cache/chroma_db/zinweb"
+    corpus_folder = "data/corpus2"
+    
+    # Delete the collection_path directory
+    if os.path.exists(collection_path):
+        shutil.rmtree(collection_path)
+    
+    corpus = Corpus(corpus_folder=corpus_folder)
+    corpus.convert_files()
 
+    vdb = ChromaVectorDb(collection_path=collection_path)
+    vdb.load_corpus(corpus, 0)
+
+    print(vdb.get_embedded_files())
+
+if __name__ == "__main__":
+    test1()

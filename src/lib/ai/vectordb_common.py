@@ -65,7 +65,7 @@ def make_vectordb(collection_name, corpus_folder, collection_folder=None, rerank
 
 
 if __name__ == "__main__":
-    collection_name = "corpus1"
+    collection_name = "corpus2"
     vdb_type = "numpy"
     corpus_folder = os.path.abspath(fr"C:\Rob\GitHub\robertscotthoward\python-ollama-example\data\test\{vdb_type}\{collection_name}")
     vdb = make_vectordb(collection_name, corpus_folder)

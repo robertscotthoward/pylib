@@ -94,6 +94,17 @@ class VectorDb:
         self.commit_batch(threshold=100)
         return len(chunks)
 
+    def load_corpus(self, corpus : Corpus, last_updated=0):
+        """
+        Load corpus from a folder into the vector database
+        @corpus_folder is the folder to load the corpus from.
+        @last_updated is the minimum last updated time of the files in the corpus to load. All other files will be skipped. If 0, all files will be loaded.
+        @return the maximum last updated time of the files in the corpus.
+        """
+        for filepath in corpus.enumerate_files():
+            self.add_document(filepath)
+        self.commit_batch(threshold=0)
+
 
     def commit_batch(self, threshold=0):
         raise NotImplementedError("Subclasses must implement this method.")

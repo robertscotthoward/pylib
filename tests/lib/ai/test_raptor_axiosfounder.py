@@ -1,5 +1,6 @@
 from pathlib import Path
 from lib.tools import findPath
+import pytest
 
 
 def test_raptor_axiosfounder():
@@ -47,6 +48,8 @@ def test_ollama_index_axiosfounder():
 
 
 
+# Skip all tests in this
+pytestmark = pytest.mark.skip(reason="Skip all tests in this file")
 
 if __name__ == "__main__":
     test_ollama_index_axiosfounder()

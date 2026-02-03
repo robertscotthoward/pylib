@@ -193,7 +193,7 @@ def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False
 # ============================== TESTS ==============================
 
 def test_convert_doc_to_docx():
-    doc_file = r"..\data\corpus1\Niven, Larry - Unfinished Story.doc"
+    doc_file = r"..\data\corpus2\Niven, Larry - Unfinished Story.doc"
     extracted_text = convert_doc_to_docx(doc_file)
     print(extracted_text)
 

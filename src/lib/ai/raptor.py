@@ -1,6 +1,7 @@
 import glob
 import os
 from pathlib import Path
+from lib.ai.orchestration import process_corpus
 from lib.tools import *
 
 # Use this instead of "import raptor"
@@ -416,6 +417,6 @@ def test_raptor():
 
 
 if __name__ == "__main__":
-    process_corpus(findPath("data/corpus1"))
+    process_corpus(findPath("data/corpus2"))
     test_with_chroma_store()
     #test_raptor()

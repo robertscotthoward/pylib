@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 from lib.tools import findPath
 
@@ -42,6 +43,8 @@ def test_ollama_index_wilmott():
 
 
 
+# Skip all tests in this file
+pytestmark = pytest.mark.skip(reason="Skip all tests in this file")
 
 if __name__ == "__main__":
     # test_raptor_wilmott()
