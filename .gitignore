@@ -3,6 +3,7 @@
 credentials.*
 /cache/
 /data/vdb/
+/tests/data/rag/
 
 
 # Byte-code files
