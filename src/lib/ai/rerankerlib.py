@@ -7,8 +7,8 @@ import pytest
 
 
 class Reranker:
-    def __init__(self):
-        pass
+    def __init__(self, model_name=None):
+        self.model_name = model_name
 
     def compute_score(self, pairs, batch_size=32):
         return self.reranker.compute_score(pairs, batch_size=batch_size)
@@ -39,8 +39,6 @@ class GeneralReranker(Reranker):
 class Flag_Reranker(Reranker):
     """Reranker using the FlagEmbedding library. This one is slower but more accurate. Use the NumPy_Reranker for faster results."""
     def __init__(self):
-        super().__init__()
-
         # uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
         # uv add flagembedding
         import torch
@@ -52,6 +50,7 @@ class Flag_Reranker(Reranker):
         modelName = 'BAAI/bge-reranker-v2-m3'
         if self.device == "cuda":
             modelName = 'BAAI/bge-reranker-large'
+        super().__init__(model_name=modelName)
         self.reranker = FlagReranker(modelName, device=self.device, use_fp16=True)
 
 

@@ -11,18 +11,17 @@ from lib.ai.corpus import *
 from chromadb.config import Settings
 from lib.ai.vectordb_chroma import ChromaVectorDb
 from lib.ai.vectordb_numpy import NumpyVectorDb
-from lib.ai.rerankers import *
 
 
 
-def make_vectordb(collection_name, corpus_folder, collection_folder=None, reranker=None, load_corpus=True):
+def make_vectordb(collection_name, corpus_folder, collection_folder=None, reranker=None, load_corpus=True, model_name="all-MiniLM-L6-v2"):
     corpus = Corpus(corpus_folder=corpus_folder)
     if load_corpus and corpus_folder:
         corpus.convert_files()
     collection_folder = collection_folder or os.path.abspath(f"data/vdb/{collection_name}")
 
     splitter = RecursiveCharacterText_Splitter(chunk_size=1000, chunk_overlap=200)
-    vdb = ChromaVectorDb(corpus, splitter, collection_path=collection_folder, reranker=reranker)
+    vdb = ChromaVectorDb(corpus, splitter, collection_path=collection_folder, reranker=reranker, model_name=model_name)
 
     # Store cache file in the same directory as the vector database
     cache_file_path = os.path.join(collection_folder, "chroma_rag.json")
@@ -65,10 +64,11 @@ def make_vectordb(collection_name, corpus_folder, collection_folder=None, rerank
 
 
 if __name__ == "__main__":
-    collection_name = "corpus2"
+    collection_name = "corpus1"
     vdb_type = "numpy"
-    corpus_folder = os.path.abspath(fr"C:\Rob\GitHub\robertscotthoward\python-ollama-example\data\test\{vdb_type}\{collection_name}")
-    vdb = make_vectordb(collection_name, corpus_folder)
+    corpus_folder = os.path.abspath(fr"tests/data/{collection_name}")
+    collection_folder = os.path.abspath(f"tests/data/vdb/{vdb_type}/{collection_name}")
+    vdb = make_vectordb(collection_name, corpus_folder, collection_folder)
 
     context = vdb.retrieve_documents("I want to shift into another plane. What spell should I use?")
     print(context)

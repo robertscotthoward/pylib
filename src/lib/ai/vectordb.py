@@ -3,12 +3,17 @@ import json
 import datetime
 import re
 from lib.ai.fileconvert import get_text
+from lib.ai.rerankerlib import GeneralReranker
 from lib.ai.splitter import *
 from lib.tools import *
 from lib.ai.corpus import *
 from chromadb.config import Settings
 
+"""
+A vector database is a database that stores and queries embeddings of documents.
+It is used to store the embeddings (vectors of a dimension, e.g. 384 or 768 or 1024) of documents and then query the embeddings to retrieve relevant documents.
 
+"""
 
 
 def extract_date_from_path(filepath):
@@ -39,12 +44,15 @@ class VectorDb:
     @splitter is the splitter to use to split the documents into chunks.
     @collection_name is the name of the collection to use.
     @reranker is the reranker to use to rerank the results.
+    @model_name is the name of the model to use to embed the documents.
+      all-MiniLM-L6-v2: 384-dimensions, 80MB, Very Fast, 256 tokens, good accuracy - Efficnency Choice on CPU
+      all-mpnet-base-v2: 768-dimensions, 420MB, Slower, 384 tokens, better accuracy - Accuracy Choice on GPU
     """
-    def __init__(self, corpus, splitter, collection_name, reranker=None):
+    def __init__(self, corpus, splitter, collection_name, reranker=None, model_name="sentence-transformers/all-mpnet-base-v2"):
         self.collection_name = collection_name
         self.corpus = corpus
         self.splitter = splitter
-        self.reranker = reranker
+        self.reranker = reranker or GeneralReranker(model_name=model_name)
 
     def retrieve_documents(self, query, n_results=80):
         raise NotImplementedError("Subclasses must implement this method.")

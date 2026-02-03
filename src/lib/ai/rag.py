@@ -1,6 +1,9 @@
 from lib.ai.modelstack import *
 from lib.tools import *
 
+"""
+A RAG (Retrieval-Augmented Generation) system is a system that uses a vector database to retrieve relevant documents from a corpus and then uses a LLM to generate a response to a question.
+"""
 
 
 
