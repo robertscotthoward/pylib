@@ -211,13 +211,16 @@ def findPath(relPath, throwIfNotFound=True):
     """
     fn = os.path.basename(relPath)
     dir = os.path.dirname(relPath)
+    
     while True:
         path = os.path.abspath(os.path.join(dir, fn))
         if os.path.exists(path):
             return path
-        dir = os.path.abspath(os.path.join(dir, os.pardir))
-        if dir == os.path.abspath(os.sep):
+        parent_dir = os.path.abspath(os.path.join(dir, os.pardir))
+        # IF dir is the root directory, stop searching (when parent equals current).
+        if parent_dir == dir:
             break
+        dir = parent_dir
     if throwIfNotFound:
         raise FileNotFoundError(f"Could not find file '{relPath}' in the folder ancestry.")
     return None

@@ -71,20 +71,22 @@ def create_rag_system(corpus_folder, reranker_model, llm_model, embedding_model_
     # For all *.cleaned files in corpus_folder, get the modification time.
     # If the modification time is greater than last_updated, then add the file to the index.
     new_documents = []
+    total_documents = 0
     max_updated = last_updated + 1
     for file in glob.glob(os.path.join(corpus_folder, '*.cleaned')):
+        total_documents += 1
         file_updated = os.path.getmtime(file)
         if file_updated > last_updated:
             max_updated = file_updated
             text = readText(file)
             new_documents.append(Document(text=text, metadata={'file_path': file}))
-
-    print(f"Found {len(new_documents)} files in corpus_folder, max updated time: {max_updated}")
+    print(f"Found {len(new_documents)} new files of {total_documents} in corpus_folder, max updated time: {max_updated}")
     
     # Insert the changed documents directly (no need for refresh_ref_docs since we pre-filtered)
     if new_documents:
         print(f"Inserting {len(new_documents)} updated documents...")
         for doc in new_documents:
+            print(f"Embedding document: {doc.metadata['file_path']}")
             index.insert(doc)
         print(f"Index refresh complete. Updated {len(new_documents)} documents.")
         
@@ -108,6 +110,29 @@ def create_rag_system(corpus_folder, reranker_model, llm_model, embedding_model_
         node_postprocessors=[reranker],  # Reranker trims those 10 down to 3
         response_mode="compact"
     )
+
+    rag_spec = {
+        "last_updated": max_updated,
+        "total_documents": total_documents,
+        "new_documents": len(new_documents),
+        "max_updated": max_updated,
+        "rag": {
+            "reranker_model": reranker_model,
+            "llm_model": llm_model,
+            "context_size": context_size,
+            "embedding_model_name": embedding_model_name,
+            "collection_name": collection_name,
+            "vector_store": vector_store.__class__.__name__,
+            "storage_context": storage_context.__class__.__name__,
+            "index": index.__class__.__name__,
+            "query_engine": query_engine.__class__.__name__,
+            "reranker": reranker.__class__.__name__,
+        }
+    }
+
+    writeJson(rag_metadata_path, rag_spec)
+    print(f"Saved index specification to {rag_metadata_path}")
+
     return query_engine
 
 
