@@ -23,15 +23,25 @@ class ChromaVectorDb(VectorDb):
         self.collection_path = os.path.abspath(collection_path) if collection_path else None
         self.collection_dir = collection_path
         self.collection_name = os.path.basename(collection_path) if collection_path else None
+        
+        # Use a consistent embedding function (all-MiniLM-L6-v2 produces 384-dimensional embeddings)
+        from chromadb.utils import embedding_functions
+        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
+        
         self.client = chromadb.Client(Settings(
             anonymized_telemetry=False,
             is_persistent=True,
             persist_directory=self.collection_dir
         ))
         
-        # Get or create the collection
+        # Get or create the collection with the specified embedding function
         if self.collection_name:
-            self.collection = self.client.get_or_create_collection(name=self.collection_name)
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                embedding_function=self.embedding_function
+            )
             if self.collection.count():
                 print(f"Collection {self.collection_name} loaded with {self.collection.count()} entries.")
             else:
@@ -100,6 +110,51 @@ class ChromaVectorDb(VectorDb):
                 context_parts = [f"From {meta.get('filename', 'Unknown')}:\n{doc}\n" for doc, doc_id, meta in ranked]
 
         return "\n---\n".join(context_parts)
+
+
+    def retrive_documents_with_references(self, query, n_results=80):
+        """Query the vector database and return both context and references"""
+        raw_results = self.collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+        
+        if not raw_results['documents'] or not raw_results['documents'][0]:
+            return "No relevant documents found.", []
+        
+        docs = raw_results['documents'][0]
+        ids = raw_results['ids'][0]
+        metas = raw_results['metadatas'][0]
+
+        # Build context and references
+        context_parts = []
+        references = []
+        
+        for idx, (doc, doc_id, metadata) in enumerate(zip(docs, ids, metas)):
+            filename = metadata.get('filename', 'Unknown')
+            file_date = metadata.get('file_date', None)
+            chunk_index = metadata.get('chunk_index', 0)
+            
+            # Extract date from ID if not in metadata (for backward compatibility)
+            if not file_date and '::' in doc_id:
+                file_date = doc_id.split('::')[0]
+            
+            # Build context part
+            if file_date:
+                context_parts.append(f"From {filename} ({file_date}):\n{doc}\n")
+            else:
+                context_parts.append(f"From {filename}:\n{doc}\n")
+            
+            # Build reference
+            references.append({
+                'doc_id': doc_id,
+                'filename': filename,
+                'file_date': file_date,
+                'chunk_index': chunk_index
+            })
+        
+        context = "\n---\n".join(context_parts)
+        return context, references
 
 
     def get_embedded_files(self):

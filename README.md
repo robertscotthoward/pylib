@@ -30,7 +30,7 @@ These workflows allow you to toggle between active development using local edita
 ## Use in another project (live)
 ```
 Create a project folder (project1).
-uv init --python 3.13
+uv init --python 3.12
 uv add --editable ../pylib
 
 # Test:
@@ -85,7 +85,10 @@ git ls-remote --tags origin
 uv pip install -r "C:\Rob\GitHub\robertscotthoward\python\playground\make-jupyter\pyproject.toml"
 ```
 
----
+# Dependency Hell?
+```
+uv sync --reinstall
+```
 
 
 # UV Template
