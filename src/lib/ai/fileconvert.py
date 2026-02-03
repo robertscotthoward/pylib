@@ -181,16 +181,18 @@ def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False
         if os.path.exists(G) and not overwrite:
             continue
         # If the lastupdated time of F is greater than the lastupdated time of G, then overwrite G.
+        write = False
         if os.path.exists(G):
             if os.path.getmtime(F) > os.path.getmtime(G):
-                os.remove(G)
-                continue
-        text = get_text(F)
-        if filter(text):
-            writeText(G, text)
-        else:
-            if os.path.exists(G):
-                os.remove(G)
+                write = True
+                
+        if write:
+            text = get_text(F)
+            if filter(text):
+                writeText(G, text)
+            else:
+                if os.path.exists(G):
+                    os.remove(G)
 
 
 

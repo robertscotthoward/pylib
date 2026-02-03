@@ -1,13 +1,14 @@
+import glob
 import os
+from pathlib import Path
 import chromadb
 from lib.ai.fileconvert import all_files_to_text
 from lib.tools import *
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, StorageContext, Settings
+from llama_index.core import Document, VectorStoreIndex, SimpleDirectoryReader, StorageContext, Settings
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.core.postprocessor import SentenceTransformerRerank
-from llama_index.core.ingestion import IngestionPipeline, IngestionCache
 
 
 
@@ -21,12 +22,25 @@ def create_rag_system(corpus_folder, reranker_model, llm_model, embedding_model_
     @collection_name is the name of the collection to use.
     """
 
+
+    rag_metadata_path = Path(persist_dir) / "rag_metadata.json"
+    if os.path.exists(rag_metadata_path):
+        rag_metadata = json.load(open(rag_metadata_path))
+        last_updated = rag_metadata.get("last_updated", 0)
+    else:
+        rag_metadata = {}
+        last_updated = 0
+
+
     all_files_to_text(corpus_folder, cleaned_extension=".cleaned", overwrite=True)
     
     # --- STEP 1: Configure Local Models (via Ollama) ---
     # Use Nomic for embeddings and Llama 3 for the final answer
     Settings.embed_model = OllamaEmbedding(model_name=embedding_model_name)
     Settings.llm = Ollama(model=llm_model, request_timeout=120.0)
+
+    context_size = Settings.llm.metadata.context_window
+    print(f"Model '{llm_model}' has a context window of {context_size} tokens.")
 
     # --- STEP 2: Setup Persistent Local Storage ---
     db = chromadb.PersistentClient(path=persist_dir)
@@ -52,16 +66,34 @@ def create_rag_system(corpus_folder, reranker_model, llm_model, embedding_model_
         print(f"Created new index with {len(documents)} documents.")
     
     # --- STEP 3b: Refresh Index with Current Files ---
-    # Load CURRENT files from the folder
-    new_documents = SimpleDirectoryReader(
-        input_dir=corpus_folder,
-        recursive=True,
-        required_exts=[".cleaned"]
-    ).load_data()
+    # Load CURRENT files from the folder, filtering by modification time
+
+    # For all *.cleaned files in corpus_folder, get the modification time.
+    # If the modification time is greater than last_updated, then add the file to the index.
+    new_documents = []
+    max_updated = last_updated + 1
+    for file in glob.glob(os.path.join(corpus_folder, '*.cleaned')):
+        file_updated = os.path.getmtime(file)
+        if file_updated > last_updated:
+            max_updated = file_updated
+            text = readText(file)
+            new_documents.append(Document(text=text, metadata={'file_path': file}))
+
+    print(f"Found {len(new_documents)} files in corpus_folder, max updated time: {max_updated}")
     
-    # Refresh the index - only embeds/inserts what is NEW or CHANGED
-    refreshed_docs = index.refresh_ref_docs(new_documents)
-    print(f"Index refresh complete. Updated {sum(refreshed_docs)} documents.")
+    # Insert the changed documents directly (no need for refresh_ref_docs since we pre-filtered)
+    if new_documents:
+        print(f"Inserting {len(new_documents)} updated documents...")
+        for doc in new_documents:
+            index.insert(doc)
+        print(f"Index refresh complete. Updated {len(new_documents)} documents.")
+        
+        # Save the current timestamp to metadata file
+        rag_metadata['last_updated'] = max_updated
+        writeJson(rag_metadata_path, rag_metadata)
+        print(f"Saved index metadata to {rag_metadata_path}")
+    else:
+        print("No updated documents to refresh.")
 
     # --- STEP 4: Initialize the Reranker ---
     # We pull a local cross-encoder to refine the results
