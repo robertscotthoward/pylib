@@ -4,6 +4,7 @@ a .docx file to a text file, or a .pdf file to a text file.
 """
 
 # uv add python-docx pypdf rdflib striprtf
+import re
 from docx import Document
 from lib.tools import ensureFolder, readText, writeText
 import ebooklib
@@ -91,7 +92,7 @@ def pdf_to_text(filepath):
     # text = '\n\n'.join(pages)
     import pdfplumber
     with pdfplumber.open(filepath) as pdf:
-        text = '\n\n'.join([page.extract_text() for page in pdf.pages])
+        text = '\n\n'.join([page.extract_text(x_tolerance=5, y_tolerance=3, layout=True, x_density=7.25, y_density=13) for page in pdf.pages])
     return text
 
 
@@ -185,14 +186,22 @@ def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False
         if os.path.exists(G):
             if os.path.getmtime(F) > os.path.getmtime(G):
                 write = True
+        else:
+            write = True
                 
         if write:
             text = get_text(F)
+            # Replace all double spaces with single spaces
+            lt = ""
+            while lt != text:
+                lt = text
+                text = re.sub(r'\s+', ' ', text)
             if filter(text):
                 writeText(G, text)
             else:
                 if os.path.exists(G):
                     os.remove(G)
+    pass
 
 
 

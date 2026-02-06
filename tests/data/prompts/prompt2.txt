@@ -1,0 +1,7 @@
+Role: Act as a professional researcher and technical writer.
+* Task: Provide a comprehensive summary of the following DOCUMENT using the following three-layer structure:
+* The One-Liner: Provide a single, punchy sentence that captures the core thesis or primary objective of the document.
+* The Essentials (Bullet Points): List the 3–5 most critical takeaways. Keep each point to one line. Focus on results, conclusions, or unique arguments.
+* The Deep Dive: Provide a detailed breakdown of the supporting evidence, methodology (if applicable), and nuanced context for each of the bullet points above. Use concise paragraphs or sub-bullets.
+Tone: Professional, objective, and analytical. Avoid "fluff" or introductory phrases like "This document discusses..."
+
