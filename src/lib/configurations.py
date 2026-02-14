@@ -4,21 +4,20 @@ import os
 
 
 """
-credentials = getYaml('credentials')
-config = getYaml('config')
-env = None
+USAGE:
+config, credentials, environment = get_config_credentials_environment()
 """
 
 
-def get_environment(config='config'):
+def get_environment(config='config.yaml'):
     """
     Given a configuration file, determine the environment based on the first environment that matches the environment test.
     @config_name: The name of the configuration file. Defaults to 'config'.
     @return: The environment and the configuration.
     @example:
-        env, config = get_environment('config')
+        env, environment = get_environment('config')
         print(env)
-        print(config)
+        print(environment)
     """
 
     if isinstance(config, str):
@@ -63,6 +62,14 @@ def get_config(config_path='config.yaml'):
     a = g(config, 'all', {})
     c = g(config, env, {})
     return {**a, **c}
+
+
+def get_config_credentials_environment(config_path='config.yaml', credentials_path='credentials.yaml'):
+    "Get the resolved config and credentials for the current environment."
+    env, environment = get_environment(config_path)
+    config = get_config(config_path)
+    credentials = getYaml(credentials_path)
+    return config, credentials, environment
 
 
 

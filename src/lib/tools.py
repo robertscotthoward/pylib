@@ -7,7 +7,7 @@ import csv
 import yaml
 from yaml.representer import SafeRepresenter
 from ruamel.yaml import YAML
-
+import pydantic
 
 
 
@@ -137,11 +137,31 @@ def readYaml(file):
 def parseYaml(text):
     return yaml.safe_load(text)
 
-def writeYaml(file, data):
-    with open(file, "w", encoding="utf-8") as f:
-        yaml.dump(
+def toYaml(data):
+    def convert_to_serializable(obj):
+        """Recursively convert Pydantic models to dicts."""
+        if isinstance(obj, pydantic.BaseModel):
+            return obj.model_dump()
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [convert_to_serializable(item) for item in obj]
+        else:
+            return obj
+    
+    if isinstance(data, str):
+        data = parseYaml(data)
+    elif isinstance(data, pydantic.BaseModel):
+        data = data.model_dump()
+    elif isinstance(data, dict):
+        data = convert_to_serializable(data)
+    elif isinstance(data, list):
+        data = convert_to_serializable(data)
+    else:
+        raise Exception(f"Invalid data type: {type(data)}")
+    
+    s = yaml.dump(
             data,
-            f,
             indent=2,
             default_flow_style=False,
             allow_unicode=True,
@@ -149,6 +169,11 @@ def writeYaml(file, data):
             Dumper=PrettyDumper,
             sort_keys=False
         )
+    return s
+
+def writeYaml(file, data):
+    with open(file, "w", encoding="utf-8") as f:
+        f.write(toYaml(data))
 
 def readBytes(file):
     with open(file, "rb") as f:

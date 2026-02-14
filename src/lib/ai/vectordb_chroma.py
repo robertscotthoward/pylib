@@ -14,7 +14,7 @@ from lib.ai.vectordb import VectorDb
 class ChromaVectorDb(VectorDb):
     """RAG system for querying a corpus using ChromaDB vector database"""
 
-    def __init__(self, corpus=None, splitter=None, collection_path=None, reranker=None, model_name="all-MiniLM-L6-v2"):
+    def __init__(self, corpus=None, splitter=None, collection_path=None, reranker=None):
         super().__init__(corpus, splitter, os.path.basename(collection_path) if collection_path else None, reranker)
         # Suppose collection_path is D:\rob\rag\vectordb\zinweb
         # Then collection_dir is D:\rob\rag\vectordb\zinweb
@@ -27,7 +27,7 @@ class ChromaVectorDb(VectorDb):
         # Use a consistent embedding function (all-MiniLM-L6-v2 produces 384-dimensional embeddings)
         from chromadb.utils import embedding_functions
         self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=model_name
+            model_name="all-MiniLM-L6-v2" # 384 dimensions
         )
         
         self.client = chromadb.Client(Settings(
