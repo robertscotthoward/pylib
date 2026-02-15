@@ -707,18 +707,18 @@ def to_string(o):
     return s
 
 
-def deep_merge(base : dict, override : dict) -> dict:
-    """Deep merge override dict into base dict, preserving all keys."""
+def deep_merge(base: dict, override: dict) -> dict:
+    """Recursively deep merge override dict into base dict, preserving all keys.
+
+    This function merges nested dictionaries at all levels, not just the top 2 levels.
+    Values from override will overwrite values in base, but nested dicts are merged.
+    """
     for key, value in override.items():
-        if key not in base:
-            base[key] = {}
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            for sub_key, sub_value in value.items():
-                if sub_key in base[key] and isinstance(base[key][sub_key], dict) and isinstance(sub_value, dict):
-                    base[key][sub_key].update(sub_value)
-                else:
-                    base[key][sub_key] = sub_value
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            # Both are dicts - recursively merge
+            deep_merge(base[key], value)
         else:
+            # Override the value (or add new key)
             base[key] = value
     return base
 
