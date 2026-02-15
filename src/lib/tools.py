@@ -706,6 +706,23 @@ def to_string(o):
         s = dt.isoformat().split("T")[0]
     return s
 
+
+def deep_merge(base : dict, override : dict) -> dict:
+    """Deep merge override dict into base dict, preserving all keys."""
+    for key, value in override.items():
+        if key not in base:
+            base[key] = {}
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            for sub_key, sub_value in value.items():
+                if sub_key in base[key] and isinstance(base[key][sub_key], dict) and isinstance(sub_value, dict):
+                    base[key][sub_key].update(sub_value)
+                else:
+                    base[key][sub_key] = sub_value
+        else:
+            base[key] = value
+    return base
+
+
 def dump(obj, level=0, skipNulls=True, header=None):
     "Print out the non-null properties of an object in columnar format."
     if level == 0:

@@ -57,6 +57,7 @@ def get_environment(config='config.yaml'):
 
 
 def get_config(config_path='config.yaml'):
+    # OBSOLETE - use get_config_environment instead
     config = getYaml(config_path)
     env, environment = get_environment(config)
     a = g(config, 'all', {})
@@ -64,25 +65,38 @@ def get_config(config_path='config.yaml'):
     return {**a, **c}
 
 
-def get_config_credentials_environment(config_path='config.yaml', credentials_path='credentials.yaml'):
-    "Get the resolved config and credentials for the current environment."
-    env, environment = get_environment(config_path)
-    config = get_config(config_path)
+def get_config_environment(config_path='config.yaml', credentials_path='credentials.yaml'):
+    config = getYaml(config_path)
     credentials = getYaml(credentials_path)
 
-    # Merge the credentials into the config by creating or overwriting the config with the credentials.
-    for key, value in credentials.items():
-        if key not in config:
-            config[key] = {}
-        if isinstance(value, dict) and isinstance(config.get(key), dict):
-            for sub_key, sub_value in value.items():
-                if sub_key in config[key] and isinstance(config[key][sub_key], dict) and isinstance(sub_value, dict):
-                    config[key][sub_key].update(sub_value)
-                else:
-                    config[key][sub_key] = sub_value
-        else:
-            config[key] = value
+    # Deep-merge the credentials into the config by creating or overwriting the config with the credentials.
+    config = deep_merge(config, credentials)
 
+    env, environment = get_environment(config)
+    a = g(config, 'all', {})
+    c = g(config, env, {})
+
+    # Deep merge instead of shallow merge
+    config = deep_merge(a, c)
+
+    return config, environment
+
+
+def get_config_credentials_environment(config_path='config.yaml', credentials_path='credentials.yaml'):
+    """Get config, credentials, and environment with proper deep merging."""
+    config = getYaml(config_path)
+    credentials = getYaml(credentials_path)
+    
+    # Deep-merge the credentials into the config
+    config = deep_merge(config, credentials)
+    
+    env, environment = get_environment(config)
+    a = g(config, 'all', {})
+    c = g(config, env, {})
+    
+    # Deep merge instead of shallow merge
+    config = deep_merge(a, c)
+    
     return config, credentials, environment
 
 
@@ -105,6 +119,29 @@ def test1():
     print(config)
 
 
+def test2():
+    a = {
+        'a': 1,
+        'b': 2,
+        'c': {
+            'd': 3,
+            'f': 4
+        }
+    }
+
+    b = {
+        'a': 10,
+        'b': 20,
+        'c': {
+            'd': 30,
+            'e': 40
+        }
+    }
+    c = deep_merge(a, b)
+    print(c)
+    pass
+    
 
 if __name__ == "__main__":
     test1()
+    test2()
