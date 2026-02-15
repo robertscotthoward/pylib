@@ -69,6 +69,20 @@ def get_config_credentials_environment(config_path='config.yaml', credentials_pa
     env, environment = get_environment(config_path)
     config = get_config(config_path)
     credentials = getYaml(credentials_path)
+
+    # Merge the credentials into the config by creating or overwriting the config with the credentials.
+    for key, value in credentials.items():
+        if key not in config:
+            config[key] = {}
+        if isinstance(value, dict) and isinstance(config.get(key), dict):
+            for sub_key, sub_value in value.items():
+                if sub_key in config[key] and isinstance(config[key][sub_key], dict) and isinstance(sub_value, dict):
+                    config[key][sub_key].update(sub_value)
+                else:
+                    config[key][sub_key] = sub_value
+        else:
+            config[key] = value
+
     return config, credentials, environment
 
 
