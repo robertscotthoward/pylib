@@ -1,0 +1,2 @@
+a: 123
+b: INCLUDEFILE(data/test/b.yaml)

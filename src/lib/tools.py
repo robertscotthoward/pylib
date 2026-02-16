@@ -307,7 +307,9 @@ def getYaml(relPath):
                         match = re.match(v)
                         if match:
                             filename = match.group("A")
-                            v = readText(filename)
+                            with open(filename) as f:
+                                v = yaml.load(f)
+                            resolve_includes(v)
                             o[k] = v
                     else:
                         resolve_includes(v)
@@ -821,3 +823,10 @@ class Spy:
             self.exitHook(self)
         if self.name != '':
             print(f"SPY END:   {self.name} took {self.elapsedSeconds():.4f}s")
+
+
+
+
+if __name__ == "__main__":
+    o = getYaml("data/test/a.yaml")
+    print(o)
