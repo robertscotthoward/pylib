@@ -6,7 +6,8 @@ import os
 import csv
 import yaml
 from yaml.representer import SafeRepresenter
-from ruamel.yaml import YAML
+#from ruamel.yaml import YAML
+import yaml
 import pydantic
 
 
@@ -307,8 +308,7 @@ def getYaml(relPath):
                         match = re.match(v)
                         if match:
                             filename = match.group("A")
-                            with open(filename) as f:
-                                v = yaml.load(f)
+                            v = yaml.safe_load(readText(filename))
                             resolve_includes(v)
                             o[k] = v
                     else:
@@ -320,9 +320,7 @@ def getYaml(relPath):
     if not relPath.endswith('.yaml'):
         relPath += '.yaml'
     path = findPath(relPath)    
-    yaml = YAML()
-    with open(path) as f:
-        o = yaml.load(f)
+    o = yaml.safe_load(readText(path))
     resolve_includes(o)
     return o
 
@@ -336,18 +334,22 @@ def md5(s):
   return  hash.hexdigest()
 
 
-def g(o, path, default=None, sep='/'):
+def g(o, path, default='THROW IF NOT FOUND!', sep='/'):
     """
     Get a value from a dictionary using a path string.
     Example: g(o, "a/b/c") is equivalent to o['a']['b']['c']
     """
     for k in path.split(sep):
         if o is None:
+            if default == 'THROW IF NOT FOUND!':
+                raise KeyError(f"Key not found: {path}")
             return default
         try:
             k = int(k)
         except ValueError:
             if not k in o:
+                if default == 'THROW IF NOT FOUND!':
+                    raise KeyError(f"Key not found: {path}")
                 return default
         o = o[k]
     return o
