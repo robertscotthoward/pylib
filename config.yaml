@@ -7,3 +7,24 @@ environments:
     test:
       environment_variable: "HOMEDRIVE=C:"
     port: 5000
+
+
+
+
+all:
+  coinbase:
+    api_key: "FROM CREDENTIALS FILE"
+    api_secret: "FROM CREDENTIALS FILE"
+
+  google:
+    gdrive:
+
+
+
+
+prod:
+
+
+
+
+local:

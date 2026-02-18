@@ -60,8 +60,8 @@ def get_config(config_path='config.yaml'):
     # OBSOLETE - use get_config_environment instead
     config = getYaml(config_path)
     env, environment = get_environment(config)
-    a = g(config, 'all', {})
-    c = g(config, env, {})
+    a = g(config, 'all', {}) or {}
+    c = g(config, env, {}) or {}
     return {**a, **c}
 
 
