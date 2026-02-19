@@ -308,6 +308,7 @@ def getYaml(relPath):
                         match = re.match(v)
                         if match:
                             filename = match.group("A")
+                            filename = findPath(filename)
                             v = yaml.safe_load(readText(filename))
                             resolve_includes(v)
                             o[k] = v
