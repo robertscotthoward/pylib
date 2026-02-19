@@ -1,2 +1,2 @@
-call .venv\Scripts\activate
-start cmd
+title PyLib
+.venv\Scripts\activate
