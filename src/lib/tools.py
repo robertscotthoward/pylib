@@ -71,8 +71,8 @@ def is_low_memory(threshold_percent=85):
     # that the OS can give back to processes immediately.
     available_gb = mem.available / (1024**3)
     
-    print(f"Memory Usage: {mem.percent}%")
-    print(f"Available RAM: {available_gb:.2f} GB")
+    # print(f"Memory Usage: {mem.percent}%")
+    # print(f"Available RAM: {available_gb:.2f} GB")
 
     if mem.percent > threshold_percent:
         print("⚠️ WARNING: Low RAM detected! Consider closing background apps.")

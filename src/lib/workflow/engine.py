@@ -97,10 +97,20 @@ class Engine(object):
 
 
     def process_state(self, state):
+        "Called when a state is entered. This is where you can hook into the engine to execute the state."
         if self.callback:
             newState = self.callback(self, state)
             if newState:
                 state = newState
+        if 'process' in state:
+            for key, process in state['process'].items():
+                if key == 'run':
+                    if not process in globals():
+                        raise ValueError(f"Function {process} not found")
+                    globals()[process](self)
+                else:
+                    raise ValueError(f"Unknown process type: {key}")
+                process(self)
         state['end_time'] = time.time()
         state['duration'] = state['end_time'] - state['start_time']
         return state

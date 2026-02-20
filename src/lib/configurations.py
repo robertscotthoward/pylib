@@ -39,8 +39,6 @@ def get_environment(config='config.yaml'):
                 # Yes. Is it set to the correct value?
                 envvar_name = envvar.split('=')[0]
                 envvar_value = envvar.split('=')[1]
-                print(f"envvar_name: {envvar_name}, envvar_value: {envvar_value}")
-                print(f"os.environ[envvar_name]: {os.environ.get(envvar_name)}")
                 if envvar_name in os.environ and os.environ[envvar_name] == envvar_value:
                     # Yes. Set the environment and configuration.
                     env = key
