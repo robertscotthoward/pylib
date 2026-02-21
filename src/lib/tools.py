@@ -335,21 +335,25 @@ def md5(s):
   return  hash.hexdigest()
 
 
-def g(o, path, default='THROW IF NOT FOUND!', sep='/'):
+def g(o, path, default=None, sep='/'):
     """
     Get a value from a dictionary using a path string.
     Example: g(o, "a/b/c") is equivalent to o['a']['b']['c']
     """
+    throwIf = False
+    if path.startswith('!'):
+        path = path[1:]
+        throwIf = True
     for k in path.split(sep):
         if o is None:
-            if default == 'THROW IF NOT FOUND!':
+            if throwIf:
                 raise KeyError(f"Key not found: {path}")
             return default
         try:
             k = int(k)
         except ValueError:
             if not k in o:
-                if default == 'THROW IF NOT FOUND!':
+                if throwIf:
                     raise KeyError(f"Key not found: {path}")
                 return default
         o = o[k]
