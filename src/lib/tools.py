@@ -24,6 +24,12 @@ def strip_lines(s):
     return '\n'.join([line.strip() for line in s.split('\n')])
     
 
+def flatten_lines(s):
+    "Given a string with multiple lines, return a single string with no newlines."
+    s = strip_lines(s)
+    return s.replace('\n', '').replace('\r', '')
+
+
 def to_seconds(s):
     if isinstance(s, float):
         return s
