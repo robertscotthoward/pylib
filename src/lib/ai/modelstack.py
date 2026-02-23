@@ -1,4 +1,5 @@
 import time
+from tkinter import S
 import boto3
 import requests
 import json
@@ -9,17 +10,17 @@ from lib.tools import *
 
 
 
-def clean_json(sJson):
+def clean_json(sJson) -> str:
     # Remove common markdown wrappers
     if '```json' in sJson:
-        sJson = sJson.split('```json')[1]
+        S = sJson.split('```json')[1]
     if "```" in sJson:
-        sJson = sJson.split("```")[0]
-    sJson = sJson.strip()
+        s = sJson.split("```")[0]
+    s = s.strip()
     
-    sJson = sJson.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    sJson = re.sub(r'\s+', ' ', sJson)  # collapse multiple spaces
-    return sJson
+    s = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    s = re.sub(r'\s+', ' ', s)  # collapse multiple spaces
+    return s
 
 
 

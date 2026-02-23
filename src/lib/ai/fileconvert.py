@@ -4,6 +4,7 @@ a .docx file to a text file, or a .pdf file to a text file.
 """
 
 # uv add python-docx pypdf rdflib striprtf
+import io
 import re
 from docx import Document
 from lib.tools import ensureFolder, readText, writeText
@@ -11,6 +12,7 @@ import ebooklib
 import glob
 import os
 import subprocess
+
 
 
 
@@ -166,6 +168,74 @@ def docx_to_text(docx_path):
     document = Document(docx_path)
     text = '\n\n'.join(p.text for p in document.paragraphs)
     return text
+
+def docx_bytes_to_markdown(b : bytes) -> str:
+    document = Document.from_bytes(b)
+    markdown_lines = []
+    
+    for paragraph in document.paragraphs:
+        if not paragraph.text.strip():
+            continue
+        
+        style = paragraph.style.name
+        text = paragraph.text
+        
+        if style.startswith('Heading 1'):
+            markdown_lines.append(f"# {text}")
+        elif style.startswith('Heading 2'):
+            markdown_lines.append(f"## {text}")
+        elif style.startswith('Heading 3'):
+            markdown_lines.append(f"### {text}")
+        elif style.startswith('Heading 4'):
+            markdown_lines.append(f"#### {text}")
+        elif style.startswith('Heading 5'):
+            markdown_lines.append(f"##### {text}")
+        elif style.startswith('Heading 6'):
+            markdown_lines.append(f"###### {text}")
+        elif style.startswith('List'):
+            level = paragraph.paragraph_format.left_indent
+            indent = '  ' * (level // 914400) if level else 0  # 914400 twips = 1 inch
+            markdown_lines.append(f"{indent}- {text}")
+        else:
+            markdown_lines.append(text)
+    
+    return '\n\n'.join(markdown_lines)
+
+
+
+
+def xlsx_bytes_to_markdown(b : bytes) -> str:
+    import pandas as pd
+    import io
+    
+    excel_file = pd.ExcelFile(io.BytesIO(b))
+    markdown_parts = []
+    
+    for sheet_name in excel_file.sheet_names:
+        df = pd.read_excel(io.BytesIO(b), sheet_name=sheet_name)
+        
+        markdown_parts.append(f"## {sheet_name}\n")
+        markdown_parts.append(df.to_markdown())
+    
+    return '\n\n'.join(markdown_parts)
+
+
+
+
+def pptx_bytes_to_markdown(b : bytes) -> str:
+    import io
+    from pptx import Presentation
+
+    presentation = Presentation(io.BytesIO(b))
+    markdown_parts = []
+    
+    for slide_num, slide in enumerate(presentation.slides, 1):
+        markdown_parts.append(f"## Slide {slide_num}\n")
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text.strip():
+                markdown_parts.append(shape.text)
+    
+    return '\n\n'.join(markdown_parts)
 
 
 
