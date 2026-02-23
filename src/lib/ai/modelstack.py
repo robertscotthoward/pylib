@@ -12,12 +12,14 @@ from lib.tools import *
 
 def clean_json(sJson) -> str:
     # Remove common markdown wrappers
+    s = sJson
     if '```json' in sJson:
-        S = sJson.split('```json')[1]
+        s = s.split('```json')[1]
     if "```" in sJson:
-        s = sJson.split("```")[0]
+        s = s.split("```")[0]
     s = s.strip()
-    
+    if not s.startswith('{') :
+        pass
     s = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
     s = re.sub(r'\s+', ' ', s)  # collapse multiple spaces
     return s

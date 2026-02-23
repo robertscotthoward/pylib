@@ -207,17 +207,24 @@ def docx_bytes_to_markdown(b : bytes) -> str:
 def xlsx_bytes_to_markdown(b : bytes) -> str:
     import pandas as pd
     import io
-    
+
+    # We cannot just convert this to a markdown table because the columns are not always aligned and there migth be too many columns.
     excel_file = pd.ExcelFile(io.BytesIO(b))
     markdown_parts = []
     
     for sheet_name in excel_file.sheet_names:
         df = pd.read_excel(io.BytesIO(b), sheet_name=sheet_name)
-        
         markdown_parts.append(f"## {sheet_name}\n")
-        markdown_parts.append(df.to_markdown())
+
+        # For each row in the dataframe, print "ROW: {i}"
+        #   For each column in the row, print "* {column}: {value}"
+        for i, row in df.iterrows():
+            markdown_parts.append(f"ROW: {i}")
+            for column in df.columns:
+                markdown_parts.append(f"* {column}: {row[column]}")
+            markdown_parts.append("")
     
-    return '\n\n'.join(markdown_parts)
+    return '\n'.join(markdown_parts)
 
 
 
