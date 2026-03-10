@@ -12,6 +12,37 @@ from llama_index.core.postprocessor import SentenceTransformerRerank
 
 
 
+
+def get_llm(config : dict) -> Ollama:
+    """
+    @config is a dictionary containing the configuration for the LLM.
+    @config['model'] is the model to use.
+    @config['context_window'] is the context window to use.
+    @config['max_tokens'] is the maximum number of tokens to use.
+    @config['temperature'] is the temperature to use.
+    @config['top_p'] is the top_p to use.
+    """
+
+    model = config.get('model', "llama3.1:8b")
+    context_window = from_metric(config.get('context_window', "8K"))
+    max_tokens = from_metric(config.get('max_tokens', "1K"))
+    temperature = config.get('temperature', 0.7)
+    top_p = config.get('top_p', 1.0)
+    additional_kwargs = config.get('additional_kwargs', {})
+    llm = Ollama(
+        model=model,
+        context_window=context_window,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        additional_kwargs=additional_kwargs
+    )
+    return llm
+
+
+
+
+
 def create_rag_system(
     corpus_folder, 
     reranker_model, 

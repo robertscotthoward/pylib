@@ -10,20 +10,25 @@ from lib.tools import *
 
 
 
-def clean_json(sJson) -> str:
+def clean_fence(s, fence = 'json') -> str:
     # Remove common markdown wrappers
-    s = sJson
-    if '```json' in sJson:
-        s = s.split('```json')[1]
-    if "```" in sJson:
+    s = str(s)
+    if f'```{fence}' in s:
+        s = s.split(f'```{fence}')[1]
+    if "```" in s:
         s = s.split("```")[0]
     s = s.strip()
-    if not s.startswith('{') :
-        pass
+    return s
+
+
+
+
+def clean_json(sJson) -> str:
+    # Remove common markdown fence wrappers
+    s = clean_fence(sJson, 'json')
     s = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
     s = re.sub(r'\s+', ' ', s)  # collapse multiple spaces
     return s
-
 
 
 

@@ -12,7 +12,7 @@ import ebooklib
 import glob
 import os
 import subprocess
-
+from lib.tools import *
 
 
 
@@ -100,8 +100,17 @@ def pdf_to_text(filepath):
 
 
 
+def pdf_bytes_to_text(pdf_bytes: bytes) -> str:
+    import pdfplumber
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        text = '\n\n'.join([page.extract_text(x_tolerance=5, y_tolerance=3, layout=True, x_density=7.25, y_density=13) for page in pdf.pages])
+    return text
+
+
+
+
 def convert_doc_to_docx(inPath, outPath=None):
-    wordconv_path = r"C:\Program Files\Microsoft Office\root\Office16\Wordconv.exe"
+    wordconv_path = r"C:\Program Files\Microsoft Office\Updates\Download\PackageFiles\294A8FB0-79E3-4361-BCB8-E45108B95554\root\Office16\Wordconv.exe"
     if not os.path.exists(wordconv_path):
         print(f"❌ FILE NOT FOUND: Wordconv not found at '{wordconv_path}'")
         return None
@@ -169,39 +178,75 @@ def docx_to_text(docx_path):
     text = '\n\n'.join(p.text for p in document.paragraphs)
     return text
 
+
+import pandas as pd
+import io
+
+def xls_bytes_to_markdown(byte_data):
+    # 1. Wrap the byte array in a file-like object
+    byte_stream = io.BytesIO(byte_data)
+    
+    # 2. Read the XLS file
+    # Note: xlrd is required for .xls files
+    df = pd.read_excel(byte_stream, engine='xlrd')
+    
+    # 3. Convert to Markdown
+    # 'tabulate' is used under the hood for clean formatting
+    return df.to_markdown(index=False)
+
+
+
 def docx_bytes_to_markdown(b : bytes) -> str:
-    document = Document.from_bytes(b)
+    document = Document(io.BytesIO(b))
     markdown_lines = []
     
     for paragraph in document.paragraphs:
         if not paragraph.text.strip():
             continue
-        
-        style = paragraph.style.name
         text = paragraph.text
-        
-        if style.startswith('Heading 1'):
-            markdown_lines.append(f"# {text}")
-        elif style.startswith('Heading 2'):
-            markdown_lines.append(f"## {text}")
-        elif style.startswith('Heading 3'):
-            markdown_lines.append(f"### {text}")
-        elif style.startswith('Heading 4'):
-            markdown_lines.append(f"#### {text}")
-        elif style.startswith('Heading 5'):
-            markdown_lines.append(f"##### {text}")
-        elif style.startswith('Heading 6'):
-            markdown_lines.append(f"###### {text}")
-        elif style.startswith('List'):
-            level = paragraph.paragraph_format.left_indent
-            indent = '  ' * (level // 914400) if level else 0  # 914400 twips = 1 inch
-            markdown_lines.append(f"{indent}- {text}")
+
+        if paragraph.style:
+            style = paragraph.style.name
+            
+            if style.startswith('Heading 1'):
+                markdown_lines.append(f"# {text}")
+            elif style.startswith('Heading 2'):
+                markdown_lines.append(f"## {text}")
+            elif style.startswith('Heading 3'):
+                markdown_lines.append(f"### {text}")
+            elif style.startswith('Heading 4'):
+                markdown_lines.append(f"#### {text}")
+            elif style.startswith('Heading 5'):
+                markdown_lines.append(f"##### {text}")
+            elif style.startswith('Heading 6'):
+                markdown_lines.append(f"###### {text}")
+            elif style.startswith('List'):
+                level = paragraph.paragraph_format.left_indent
+                indent = '  ' * (level // 914400) if level else 0  # 914400 twips = 1 inch
+                markdown_lines.append(f"{indent}- {text}")
+            else:
+                markdown_lines.append(text)
         else:
             markdown_lines.append(text)
     
     return '\n\n'.join(markdown_lines)
 
 
+
+
+def doc_bytes_to_markdown(b : bytes) -> str:
+    """
+    Convert old Word (.doc) files to markdown text.
+    Note: .doc files are binary format. This uses python-docx which has limited support.
+    """
+    return None
+    inFile = r"cache/temp.doc"
+    outFile = r"cache/temp.docx"
+    writeBytes(inFile, b)
+    convert_doc_to_docx(inFile, outFile)
+    b =  readBytes(outFile)
+    return docx_bytes_to_markdown(b)
+    
 
 
 def xlsx_bytes_to_markdown(b : bytes) -> str:
@@ -245,6 +290,52 @@ def pptx_bytes_to_markdown(b : bytes) -> str:
     return '\n\n'.join(markdown_parts)
 
 
+
+
+def ppt_bytes_to_markdown(b : bytes) -> str:
+    """
+    Convert old PowerPoint (.ppt) files to markdown text.
+    Note: .ppt files are binary format and harder to parse than .pptx.
+    This uses a basic extraction approach.
+    """
+    try:
+        # Try using python-pptx with a workaround for older formats
+        # If that fails, fall back to basic text extraction
+        import io
+        from pptx import Presentation
+        
+        try:
+            presentation = Presentation(io.BytesIO(b))
+            markdown_parts = []
+            
+            for slide_num, slide in enumerate(presentation.slides, 1):
+                markdown_parts.append(f"## Slide {slide_num}\n")
+                for shape in slide.shapes:
+                    if shape.has_text_frame and shape.text.strip():
+                        markdown_parts.append(shape.text)
+            
+            return '\n\n'.join(markdown_parts)
+        except (KeyError, Exception):
+            # If python-pptx fails, try basic binary text extraction
+            text_content = []
+            # Look for readable text in the binary data
+            try:
+                decoded = b.decode('utf-16-le', errors='ignore')
+                # Extract text between common delimiters
+                import re
+                text_matches = re.findall(r'[\x20-\x7E]{4,}', decoded)
+                text_content = [t.strip() for t in text_matches if t.strip() and len(t) > 3]
+            except:
+                pass
+            
+            if text_content:
+                return '\n'.join(text_content)
+            else:
+                return "Could not extract text from .ppt file. The file may be corrupted or in an unsupported format."
+    
+    except Exception as e:
+        print(f"Error converting PPT: {e}")
+        return f"Error converting PPT file: {e}"
 
 
 def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False, filter=None):

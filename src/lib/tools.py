@@ -138,7 +138,7 @@ def writeJson(file, data):
         json.dump(data, f, indent=2, cls=DateTimeEncoder)
 
 def readYaml(file):
-    with open(file) as f:
+    with open(file, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def parseYaml(text):
@@ -177,6 +177,9 @@ def toYaml(data):
             sort_keys=False
         )
     return s
+
+def toJson(data):
+    return json.dumps(data, indent=2, cls=DateTimeEncoder)
 
 def writeYaml(file, data):
     with open(file, "w", encoding="utf-8") as f:
