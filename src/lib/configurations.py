@@ -1,3 +1,4 @@
+from typing import Any, Iterator, Tuple
 from lib.tools import *
 import yaml
 import os
@@ -7,6 +8,43 @@ import os
 USAGE:
 config, credentials, environment = get_config_credentials_environment()
 """
+
+class Settings():
+    def __init__(self, config: dict):
+        self.config = config
+
+    def to_dict(self) -> dict:
+        return self.config
+
+    def g(self, path: str, default=None) -> Any:
+        return g(self.config, path, default=default, sep='.')
+
+    def get(self, path: str, default=None) -> Any:
+        return g(self.config, path, default=default)
+
+    def __getitem__(self, path) -> Any:
+        default = None
+        if isinstance(path, tuple):
+            path, default = path
+            
+        v = g(self.config, path, default=default, sep='.')
+        if isinstance(v, dict):
+            v = Settings(v)
+        return v
+
+    def __iter__(self) -> Iterator[Tuple[str, Any]]:
+        return iter(self.config)
+    
+    def items(self):
+        """Return an iterator of (key, value) pairs from the config dictionary."""
+        for k, v in self.config.items():
+            if isinstance(v, dict):
+                yield k, Settings(v)
+            else:
+                yield k, v
+
+
+
 
 
 def get_environment(config='config.yaml'):

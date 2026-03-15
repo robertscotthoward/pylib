@@ -13,6 +13,8 @@ import glob
 import os
 import subprocess
 from lib.tools import *
+import pandas as pd
+
 
 
 
@@ -38,6 +40,35 @@ def get_text(filepath):
         print(f"Error getting text from {filepath}: {e}")
         return None
 
+
+
+
+def get_markdown(filepath):
+    """Get the text of a file. Only specific file extensions are supported."""
+
+    try:
+        if not os.path.exists(filepath):
+            return None
+        if filepath.endswith(".pdf"):
+            return pdf_bytes_to_markdown(readBytes(filepath))
+        if filepath.endswith(".docx"):
+            return docx_to_text(filepath)
+        if filepath.endswith(".rtf"):
+            return rtf_to_text(filepath)
+        if filepath.endswith(".rdf"):
+            return rdf_to_text(filepath)
+        if filepath.endswith(".epub"):
+            return epub_to_markdown(filepath)
+        return readText(filepath)
+    except Exception as e:
+        print(f"Error getting text from {filepath}: {e}")
+        return None
+
+
+
+def epub_to_markdown(filepath):
+    import pypandoc
+    return pypandoc.convert_file(filepath, 'md', format='epub')
 
 
 def epub_to_text(filepath):
@@ -88,14 +119,28 @@ def rtf_to_text(filepath):
 
 
 
+def pdf_bytes_to_text(bytes: bytes) -> str:
+    import pdfplumber
+    with pdfplumber.open(io.BytesIO(bytes)) as pdf:
+        text = '\n\n'.join([page.extract_text(x_tolerance=5, y_tolerance=3, layout=True, x_density=7.25, y_density=13) for page in pdf.pages])
+    return text
+
+
+def pdf_bytes_to_markdown(bytes: bytes) -> str:
+    import pymupdf4llm
+    import pymupdf
+    pdf_stream = io.BytesIO(bytes)
+    doc = pymupdf.open(stream=pdf_stream, filetype="pdf")
+    return pymupdf4llm.to_markdown(doc)
+
+
+
 def pdf_to_text(filepath):
     # import pypdf
     # pages = [page.extract_text() for page in pypdf.PdfReader(filepath).pages]
     # text = '\n\n'.join(pages)
-    import pdfplumber
-    with pdfplumber.open(filepath) as pdf:
-        text = '\n\n'.join([page.extract_text(x_tolerance=5, y_tolerance=3, layout=True, x_density=7.25, y_density=13) for page in pdf.pages])
-    return text
+    b = readBytes(filepath)
+    return pdf_bytes_to_text(b)
 
 
 
@@ -178,9 +223,6 @@ def docx_to_text(docx_path):
     text = '\n\n'.join(p.text for p in document.paragraphs)
     return text
 
-
-import pandas as pd
-import io
 
 def xls_bytes_to_markdown(byte_data):
     # 1. Wrap the byte array in a file-like object

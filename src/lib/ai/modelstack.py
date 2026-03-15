@@ -34,7 +34,6 @@ def clean_json(sJson) -> str:
 
 
 
-
 class ModelStack:
     def __init__(self, config):
         self.config = config
