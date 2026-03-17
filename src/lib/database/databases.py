@@ -191,7 +191,10 @@ class SqliteDatabase(Database):
 
     def get_column_expressions(self, column: Dict[str, Any]) -> str:
         """Get the expression for a column."""
-        s = f'"{column.name}" {column.type}'
+        ct, comment = get_sqlite_type(column.type)
+        if not ct:
+            raise ValueError(f"Unknown column type: {column.type}")
+        s = f'"{column.name}" {ct}'
         if column.get('is_primary_key', False):
             s += ' PRIMARY KEY'
             if column.get('autoincrement'):
@@ -203,7 +206,7 @@ class SqliteDatabase(Database):
                 s += ' NOT NULL'
             if column.get('default'):
                 s += f' DEFAULT {column.default}'
-        return s
+        return s, comment
 
     def create_schema_diff(self, tables: dict, force: bool = False):
         """Create a schema diff SQL of the database and the tables defined in the config."""
@@ -214,21 +217,27 @@ class SqliteDatabase(Database):
             if force or table_name not in schema:
                 columns = []
                 for column in table_config['columns']:
-                    colexp = self.get_column_expressions(column)
-                    columns.append(f'\n  {colexp}')
-                sql += f"CREATE TABLE {table_name} ({', '.join(columns)}\n);\n"
+                    desc = ''
+                    if column.get('description'):
+                        desc = f' -- {column.description}'
+                    colexp, comment = self.get_column_expressions(column)
+                    if column is table_config['columns'][-1]:
+                        columns.append(f'\n  {colexp}{comment}{desc}\n')
+                    else:
+                        columns.append(f'\n  {colexp},{comment}{desc}')
+                sql += f"CREATE TABLE {table_name} ({''.join(columns)});\n"
             else:
                 for column in table_config['columns']:
                     if force or not any(col.name == column.name for col in schema[table_name]):
-                        colexp = self.get_column_expressions(column)
-                        sql += f"ALTER TABLE {table_name} ADD COLUMN {colexp};\n"
+                        colexp, comment = self.get_column_expressions(column)
+                        sql += f"ALTER TABLE {table_name} ADD COLUMN {colexp}; {comment}\n"
                     else:
                         tc = next(c for c in schema[table_name] if c.name == column.name)
                         if column.type.lower() != tc.type.lower():
-                            sql += f"ALTER TABLE {table_name} ALTER COLUMN {column.name} TYPE {column.type};\n"
+                            sql += f"ALTER TABLE {table_name} ALTER COLUMN {column.name} TYPE {column.type}; {comment}\n"
                             tc.type = column.type
             sql += "\n"
-        return sql
+        return sql.strip()
 
     def table_exists(self, table_name: str) -> bool:
         """Check if a table exists in the SQLite database."""
@@ -434,340 +443,99 @@ def ensure_database():
     database.ensure_database(settings.tables)
 
 
-def test_read_one_table():
-    """Test reading one table from the database."""
-    db = get_db()
-    sql = "select * from roles"
-    rows = db.query(sql)
-    print(rows)
+type_mapping = {
+    # Notion property types
+    'title': 'TEXT NOT NULL',
+    'rich_text': 'TEXT',
+    'email': 'TEXT',
+    'phone_number': 'TEXT',
+    'url': 'TEXT',
+    'number': 'REAL',
+    'checkbox': 'BOOLEAN',
+    'date': 'TEXT',
+    'select': 'TEXT',
+    'multi_select': 'TEXT',
+    'relation': 'TEXT',
+    'unique_id': 'TEXT',
+    'place': 'TEXT',
+    # Native SQLite types
+    'text': 'TEXT',
+    'integer': 'INTEGER',
+    'real': 'REAL',
+    'blob': 'BLOB',
+}
 
+import sys
+from typing import Optional, Type
 
-def test_read_one_table_direct():
-    """Test reading one table from the database."""
-
-    # Get the notion token
-    token = settings['notion.cei.token']
-
-    # Get the roles table from the database
-
-
-def test1():
-    """Test the unified adapter with JOINs across Notion tables.
-
-    Uses Shillelagh for Notion table access (people, roles, privileges are Notion tables).
+def find_class_in_modules(class_name: str) -> Optional[Type]:
     """
-    db = get_db()
-    results = db.query("""
-        SELECT *
-        FROM people
-        JOIN roles ON people.roles = roles.id
-    """)
-    print(results)
+    Search all loaded modules in the runtime for a class by name.
+    
+    Returns the first matching class found, or None if not found.
+    
+    Args:
+        class_name: The name of the class to search for
+        
+    Returns:
+        The class object if found, None otherwise
+        
+    Example:
+        MyClass = find_class_in_modules("MyClass")
+        if MyClass:
+            instance = MyClass()
+    """
+    import enum
+    import inspect
+    from src.core.interfaces.types import DataType
 
-    # Use Shillelagh connection for Notion table queries
-    conn = get_shillelagh_connection()
+    modules = list(sys.modules.values())
+    for module in modules:
+        # Skip None modules and built-in modules
+        if module is None:
+            continue
+            
+        spec = getattr(module, "__spec__", None)
+        if not spec:
+            continue
 
-    # Test 1: Simple SELECT from each table
-    print("=" * 60)
-    print("TEST 1: Simple SELECT queries")
-    print("=" * 60)
+        is_builtin = getattr(spec, "origin", None) == "built-in"
+        if is_builtin:
+            continue
 
-    people_result = conn.execute("SELECT first, last FROM people")
-    people_rows = people_result.fetchall()
-    print(f"People: {len(people_rows)} rows")
-    assert len(people_rows) >= 1, "Should have at least 1 person"
+        cls = getattr(module, class_name, None)
+        if not cls:
+            continue
 
-    roles_result = conn.execute("SELECT id, name FROM roles")
-    roles_rows = roles_result.fetchall()
-    print(f"Roles: {len(roles_rows)} rows")
-    assert len(roles_rows) >= 1, "Should have at least 1 role"
+        if not inspect.isclass(cls):
+            continue
 
-    privileges_result = conn.execute("SELECT id, name FROM privileges")
-    privileges_rows = privileges_result.fetchall()
-    print(f"Privileges: {len(privileges_rows)} rows")
-    assert len(privileges_rows) >= 1, "Should have at least 1 privilege"
+        if issubclass(cls, enum.Enum):
+            return cls
 
-    # Test 2: Two-table JOIN (people -> roles)
-    print()
-    print("=" * 60)
-    print("TEST 2: Two-table JOIN (people -> roles)")
-    print("=" * 60)
-
-    cursor = conn.execute("""
-        SELECT *
-        FROM people
-        JOIN roles ON people.roles = roles.id
-    """)
-    column_names = [column[0] for column in cursor.description]
-    join_rows = cursor.fetchall()
-    print(f"People with roles: {len(join_rows)} rows")
-    for row in join_rows:
-        print(f"  {row}")
-    assert len(join_rows) >= 1, "Should have at least 1 person with a role"
-
-
-    # Test 3: Two-table JOIN (roles -> privileges)
-    print()
-    print("=" * 60)
-    print("TEST 3: Two-table JOIN (roles -> privileges)")
-    print("=" * 60)
-
-    roles_privs_result = conn.execute("""
-        SELECT roles.name as role_name, privileges.name as privilege_name
-        FROM roles
-        JOIN privileges ON roles.privileges = privileges.id
-    """)
-    roles_privs_rows = roles_privs_result.fetchall()
-    print(f"Roles with privileges: {len(roles_privs_rows)} rows")
-    for row in roles_privs_rows:
-        print(f"  {row}")
-    assert len(roles_privs_rows) >= 1, "Should have at least 1 role with privileges"
-
-    # Test 4: Three-table JOIN (people -> roles -> privileges)
-    print()
-    print("=" * 60)
-    print("TEST 4: Three-table JOIN (people -> roles -> privileges)")
-    print("=" * 60)
-
-    full_join_result = conn.execute("""
-        SELECT
-            people.first,
-            people.last,
-            roles.name as role_name,
-            privileges.name as privilege_name
-        FROM people
-        JOIN roles ON people.roles = roles.id
-        JOIN privileges ON roles.privileges = privileges.id
-    """)
-    full_join_rows = full_join_result.fetchall()
-    print(f"People with roles and privileges: {len(full_join_rows)} rows")
-    for row in full_join_rows:
-        print(f"  {row}")
-    assert len(full_join_rows) >= 1, "Should have at least 1 person with roles and privileges"
-    # Note: This may be 0 if no person has a role with privileges linked
-    # The JOIN logic is verified by Test 2 (people->roles) and Test 3 (roles->privileges)
-
-    print()
-    print("=" * 60)
-    print("ALL TESTS PASSED")
-    print("=" * 60)
-
-
-def test2():
-    """Test SQLite connection with attached databases."""
-    conn = get_connection()
+        if issubclass(cls, DataType):
+            return cls
    
-
-def inspect_all_tables():
-    """Inspect all tables defined in tables.yaml and print their columns and types."""
-    import requests
-    
-    print("=" * 80)
-    print("NOTION TABLES SCHEMA INSPECTION")
-    print("=" * 80)
-    
-    # Get all tables from config
-    tables_config = settings['persistence.tables'] or {}
-    
-    for table_name, table_config in tables_config.items():
-        print(f"\n{'-' * 80}")
-        print(f"TABLE: {table_name}")
-        print(f"{'-' * 80}")
-        
-        if table_config.get("source") != "notion":
-            print(f"  Source: {table_config.get('source')} (not Notion)")
-            continue
-        
-        notion_id = table_config.get("notionid")
-        if not notion_id:
-            print("  ERROR: No Notion ID configured")
-            continue
-        
-        # Format the database ID
-        db_id = notion_id.replace("-", "")
-        
-        # Get database schema from Notion
-        url = f"https://api.notion.com/v1/databases/{db_id}"
-        
-        headers = {
-            "Authorization": f"Bearer {settings['notion.cei.token']}",
-            "Notion-Version": "2022-06-28",
-            "Content-Type": "application/json"
-        }
-        
-        try:
-            response = requests.get(url, headers=headers)
-            
-            if response.status_code == 200:
-                data = response.json()
-                properties = data.get("properties", {})
-                
-                print(f"  Notion ID: {notion_id}")
-                print(f"  Total Columns: {len(properties)}")
-                print(f"\n  Columns:")
-                
-                for prop_name, prop_config in properties.items():
-                    prop_type = prop_config.get("type", "unknown")
-                    print(f"    - {prop_name:<30} : {prop_type}")
-                    
-                    # Print additional details for complex types
-                    if prop_type == "select":
-                        options = prop_config.get("select", {}).get("options", [])
-                        if options:
-                            print(f"      Options: {', '.join([o.get('name', '') for o in options])}")
-                    elif prop_type == "multi_select":
-                        options = prop_config.get("multi_select", {}).get("options", [])
-                        if options:
-                            print(f"      Options: {', '.join([o.get('name', '') for o in options])}")
-                    elif prop_type == "relation":
-                        relation_db = prop_config.get("relation", {}).get("database_id", "")
-                        print(f"      Related to: {relation_db}")
-                    elif prop_type == "formula":
-                        formula = prop_config.get("formula", {}).get("expression", "")
-                        print(f"      Formula: {formula}")
-                    elif prop_type == "rollup":
-                        rollup_prop = prop_config.get("rollup", {}).get("relation_property_name", "")
-                        rollup_func = prop_config.get("rollup", {}).get("function", "")
-                        print(f"      Rollup: {rollup_prop} -> {rollup_func}")
-            else:
-                print(f"  ERROR: Could not fetch schema ({response.status_code})")
-                print(f"  Response: {response.text}")
-        except Exception as e:
-            print(f"  ERROR: {e}")
-    
-    print(f"\n{'=' * 80}\n")
+    return None
 
 
-def test_join_query():
-    """Test joining People -> Roles -> Privileges using Shillelagh for Notion tables."""
-    conn = get_shillelagh_connection()
-    
-    print("=" * 80)
-    print("PEOPLE WITH RESOLVED RELATIONS")
-    print("=" * 80)
-    
-    # Query people table
-    result = conn.execute("SELECT * FROM people")
-    rows = result.fetchall()
-    
-    print(f"\nFound {len(rows)} people:\n")
-    
-    for row in rows:
-        print(f"  {row['first']} {row['last']}")
-        if 'roles' in row and row['roles']:
-            print(f"    Roles: {row['roles']}")
-    
-    # Query roles with privileges
-    print(f"\n{'=' * 80}")
-    print("ROLES WITH RESOLVED PRIVILEGES")
-    print(f"{'=' * 80}\n")
-    
-    roles_result = conn.execute("SELECT * FROM roles")
-    roles_rows = roles_result.fetchall()
-    
-    print(f"Found {len(roles_rows)} roles:\n")
-    
-    for role in roles_rows:
-        print(f"  {role['name']}")
-        if 'privileges' in role and role['privileges']:
-            print(f"    Privileges: {role['privileges']}")
-    
-    print(f"\n{'=' * 80}\n")
-    conn.close()
+def get_sqlite_type(col_type: str) -> str:
+    import enum
+    from src.core.interfaces.types import DataType
+    if col_type in type_mapping:
+        if col_type != type_mapping[col_type]:
+            return type_mapping[col_type], f' -- {col_type}'
+        return type_mapping[col_type], ''
 
+    cls = find_class_in_modules(col_type)
+    if cls:
+        if isinstance(cls, enum.Enum):
+            return 'TEXT', f' -- {cls.__name__}'
+        if issubclass(cls, DataType):
+            return cls.sqlite_type, f' -- {cls.__name__}'
 
-def dump_all_notion_tables():
-    """Dump all columns, types, and records for each Notion table."""
-    import requests
-    
-    print("=" * 100)
-    print("COMPLETE NOTION DATABASE DUMP")
-    print("=" * 100)
-    
-    # Get all tables from config
-    tables_config = settings['persistence.tables'] or {}
-    
-    for table_name, table_config in tables_config.items():
-        if table_config.get("source") != "notion":
-            continue
-        
-        notion_id = table_config.get("notionid")
-        if not notion_id:
-            continue
-        
-        db_id = notion_id.replace("-", "")
-        url = f"https://api.notion.com/v1/databases/{db_id}/query"
-        
-        headers = {
-            "Authorization": f"Bearer {settings['notion.cei.token']}",
-            "Notion-Version": "2022-06-28",
-            "Content-Type": "application/json"
-        }
-        
-        print(f"\n{'=' * 100}")
-        print(f"TABLE: {table_name.upper()}")
-        print(f"{'=' * 100}")
-        
-        response = requests.post(url, headers=headers, json={})
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Get schema from first result
-            if data.get("results"):
-                first_page = data["results"][0]
-                properties = first_page.get("properties", {})
-                
-                print(f"\nCOLUMNS AND TYPES ({len(properties)} total):")
-                print("-" * 100)
-                for prop_name, prop_config in properties.items():
-                    prop_type = prop_config.get("type", "unknown")
-                    print(f"  {prop_name:<30} : {prop_type}")
-                
-                # Print all records
-                print(f"\nRECORDS ({len(data.get('results', []))} total):")
-                print("-" * 100)
-                
-                for idx, page in enumerate(data.get("results", []), 1):
-                    print(f"\n  Record {idx}:")
-                    properties = page.get("properties", {})
-                    
-                    for prop_name, prop_value in properties.items():
-                        prop_type = prop_value.get("type", "unknown")
-                        
-                        # Extract value based on type
-                        if prop_type == "title":
-                            value = "".join([t.get("plain_text", "") for t in prop_value.get("title", [])])
-                        elif prop_type == "rich_text":
-                            value = "".join([t.get("plain_text", "") for t in prop_value.get("rich_text", [])])
-                        elif prop_type == "select":
-                            value = prop_value.get("select", {}).get("name", "")
-                        elif prop_type == "multi_select":
-                            value = ", ".join([s.get("name", "") for s in prop_value.get("multi_select", [])])
-                        elif prop_type == "number":
-                            value = prop_value.get("number")
-                        elif prop_type == "checkbox":
-                            value = prop_value.get("checkbox")
-                        elif prop_type == "email":
-                            value = prop_value.get("email", "")
-                        elif prop_type == "phone_number":
-                            value = prop_value.get("phone_number", "")
-                        elif prop_type == "url":
-                            value = prop_value.get("url", "")
-                        elif prop_type == "relation":
-                            relation_ids = [r.get("id") for r in prop_value.get("relation", [])]
-                            value = f"[{len(relation_ids)} relations: {', '.join(relation_ids[:3])}{'...' if len(relation_ids) > 3 else ''}]"
-                        elif prop_type == "unique_id":
-                            unique_id = prop_value.get("unique_id", {})
-                            value = f"{unique_id.get('prefix', '')}{unique_id.get('number', '')}"
-                        else:
-                            value = str(prop_value.get(prop_type, ""))
-                        
-                        print(f"    {prop_name:<28} ({prop_type:<15}): {value}")
-        else:
-            print(f"  ERROR: {response.status_code} - {response.text}")
-    
-    print(f"\n{'=' * 100}\n")
+    raise ValueError(f"Unknown column type: {col_type}")
+
 
 
 def create_sqlite_table(table_name: str, db_path: str, tables_config: dict) -> bool:
@@ -796,31 +564,6 @@ def create_sqlite_table(table_name: str, db_path: str, tables_config: dict) -> b
 
     table_config = tables_config[table_name]
 
-    # Map column types to SQLite types
-    # Includes both Notion-style types and native SQLite types
-    type_mapping = {
-        # Notion property types
-        'title': 'TEXT NOT NULL',
-        'rich_text': 'TEXT',
-        'email': 'TEXT',
-        'phone_number': 'TEXT',
-        'url': 'TEXT',
-        'number': 'REAL',
-        'checkbox': 'BOOLEAN',
-        'date': 'TEXT',
-        'select': 'TEXT',
-        'multi_select': 'TEXT',
-        'relation': 'TEXT',
-        'unique_id': 'TEXT',
-        'place': 'TEXT',
-        # Native SQLite types
-        'text': 'TEXT',
-        'integer': 'INTEGER',
-        'real': 'REAL',
-        'blob': 'BLOB',
-    }
-
-    # Build CREATE TABLE statement
     columns = table_config.get('columns', [])
     if not columns:
         print(f"[WARN] No columns defined for table '{table_name}' in config")
@@ -830,7 +573,10 @@ def create_sqlite_table(table_name: str, db_path: str, tables_config: dict) -> b
     for col in columns:
         col_name = col.get('name', '').replace(' ', '_')
         col_type = col.get('type', 'TEXT').lower()
-        sql_type = type_mapping.get(col_type, 'TEXT')
+        sql_type = get_sqlite_type(col_type)
+        if not sql_type:
+            raise ValueError(f"Unknown column type: {col_type}")
+
 
         # Handle primary key
         if col.get('is_primary_key'):
@@ -937,102 +683,6 @@ def create_all_sqlite_tables():
         print(f"{'='*60}\n")
     
 
-
-
-_cached_db = {}
-def get_db(path = None) -> Database:
-    if path is None:
-        path = settings['persistence.files.db_path']
-    if path not in _cached_db:
-        _cached_db[path] = Database(path)
-    return _cached_db[path]
-
-def get_db_kv(path = None) -> Database:
-    """Get a Database instance for the key-value store."""
-    if path is None:
-        path = settings['persistence.kv.db_path']
-
-    if path not in _cached_db:
-        _cached_db[path] = Database(path)
-    return _cached_db[path]
-
-
-def kv_get(key: str) -> Optional[str]:
-    """Get a value from the key-value store."""
-    import sqlite3
-
-    db_path = os.path.abspath(settings['persistence.kv.db_path'])
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT Value FROM kv WHERE ID = ?", (key,))
-    row = cursor.fetchone()
-    conn.close()
-
-    if row:
-        return row[0]
-    return None
-
-
-def kv_set(key: str, value: str):
-    """Set a value in the key-value store (insert or update)."""
-    import sqlite3
-
-    db_path = os.path.abspath(settings['persistence.kv.db_path'])
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO kv (ID, Value) VALUES (?, ?)",
-        (key, value)
-    )
-    conn.commit()
-    conn.close()
-
-
-def kv_delete(key: str):
-    """Delete a value from the key-value store."""
-    import sqlite3
-
-    db_path = os.path.abspath(settings['persistence.kv.db_path'])
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM kv WHERE ID = ?", (key,))
-    conn.commit()
-    conn.close()
-
-
-def test_kv():
-    """Test the key-value store."""
-    print("=" * 60)
-    print("TEST: Key-Value Store")
-    print("=" * 60)
-
-    # Ensure tables exist
-    create_all_sqlite_tables()
-
-    # Test set
-    kv_set("test_key", "test_value")
-    print("[OK] kv_set('test_key', 'test_value')")
-
-    # Test get
-    value = kv_get("test_key")
-    assert value == "test_value", f"Expected 'test_value', got '{value}'"
-    print(f"[OK] kv_get('test_key') = '{value}'")
-
-    # Test update
-    kv_set("test_key", "updated_value")
-    value = kv_get("test_key")
-    assert value == "updated_value", f"Expected 'updated_value', got '{value}'"
-    print(f"[OK] kv_set update: kv_get('test_key') = '{value}'")
-
-    # Test delete
-    kv_delete("test_key")
-    value = kv_get("test_key")
-    assert value is None, f"Expected None after delete, got '{value}'"
-    print("[OK] kv_delete('test_key') - value is None")
-
-    print("=" * 60)
-    print("ALL KV TESTS PASSED")
-    print("=" * 60)
 
 
 if __name__ == "__main__":

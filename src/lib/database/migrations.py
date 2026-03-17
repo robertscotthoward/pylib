@@ -53,6 +53,7 @@ class Migrations(ABC):
         Returns:
             Dict mapping database names to migration file paths (or None if no changes)
         """
+        from datetime import datetime
         self.log("[*] Generating migration files...")
         self.log("")
 
@@ -75,7 +76,7 @@ class Migrations(ABC):
         # Generate migration for existing database
         M = []
         M.append(f"-- Migration for '{self.name}'")
-        M.append(f"-- Generated at {datetime.datetime.now().isoformat()}")
+        M.append(f"-- Generated at {datetime.now().isoformat()}")
         M.append("")
 
         # Get previous migration statements to avoid duplicates
@@ -128,13 +129,14 @@ class Migrations(ABC):
 
     def _generate_base_migration(self):
         """Generate the base migration file (DDDD-0000.sql) with complete creation scripts."""
+        from datetime import datetime
         M = []
         M.append(f"-- Base schema for '{self.name}'")
-        M.append(f"-- Generated at {datetime.datetime.now().isoformat()}")
+        M.append(f"-- Generated at {datetime.now().isoformat()}")
         M.append(f"-- This file contains complete CREATE TABLE statements for all tables")
         M.append("")
 
-        tables = self.database.get_schema()
+        self.database.ensure_database(self.settings.tables)
         create_sql = self.database.create_schema_diff(self.settings.tables, force=True)
         base_file = Path(self.migrations_path) / f"{self.name}-0000.sql"
         base_file.write_text(create_sql, encoding='utf-8')
