@@ -1,0 +1,69 @@
+#
+# python -m src.main migrate
+#
+
+files:
+  description: "Files"
+  columns:
+    - name: "Id"
+      type: "integer"
+      is_primary_key: true
+      autoincrement: true
+    - name: "URI"
+      description: "The full URI of the file. Describes the location of the file on the web whose content can change over time."
+      type: "text"
+      unique: true
+    - name: "Type"
+      description: "The MIME type of the file or some other description of how to interpret the file content."
+      type: "text"
+    - name: "Description"
+      description: "A summary of the file contents"
+      type: "text"
+    - name: "Title"
+      type: "text"
+      description: "The title of the file, perhaps TITLE from the HTML."
+      type: "text"
+    - name: "Keywords"
+      type: "text"
+      description: "The keywords of the file for quick searching, e.g. news,technology,patents"
+      type: "text"
+    - name: "kvid"
+      description: "The kvid of the file content. This is a unique identifier for the file content and links to the kv table."
+      type: "text"
+    - name: "Privileges"
+      description: "The privileges of the file. This is a comma separated list of privileges. None means all privileges."
+      type: "text"
+    - name: "CreatedAt"
+      type: "datetime"
+      default: "CURRENT_TIMESTAMP"
+      update: False
+    - name: "CreatedBy"
+      type: "text"
+      update: False
+    - name: "UpdatedAt"
+      type: "datetime"
+      default: "CURRENT_TIMESTAMP"
+    - name: "UpdatedBy"
+      type: "text"
+
+
+
+
+processes:
+  description: "Processes"
+  columns:
+    - name: "Id"
+      type: "integer"
+      is_primary_key: true
+      autoincrement: true
+    - name: "Name"
+      type: "text"
+      description: "A slash-separated path to the process; e.g. 'gdrive/patti/FILEPATH'"
+      unique: true
+      required: true
+    - name: "RunOn"
+      type: "integer"
+      description: "Unix Timestamp of the date and time to run the process. If None or greater than LastRun, the process will be run."
+    - name: "LastRun"
+      type: "integer"
+      description: "Unix Timestamp of the date and time the process was last run."

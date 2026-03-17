@@ -1,0 +1,42 @@
+# This file is overlayed recursively with the credentials.yaml file, which is not checked into the repository.
+
+environments:
+  prod:
+    test:
+      environment_variable: OSTYPE=linux-gnu
+    port: 80
+  local:
+    test:
+      environment_variable: "HOMEDRIVE=C:"
+    port: 5000
+
+
+
+
+all:
+  tables: INCLUDEFILE(./tests/data/configs/tables1.yaml)
+
+  persistence:
+    migrations_path: ./cache/migrations
+
+  databases:
+    main:
+      name: main
+      type: sqlite
+      path: ./cache/main1.db
+      scripts:
+        create: |
+          PRAGMA uri = ON;
+          PRAGMA journal_mode=WAL;
+          PRAGMA synchronous=NORMAL;
+          PRAGMA cache_size=-64000;
+
+
+
+
+prod:
+
+
+
+
+local:

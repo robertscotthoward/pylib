@@ -2,12 +2,17 @@ from typing import Any, Iterator, Tuple
 from lib.tools import *
 import yaml
 import os
+from box import Box
 
 
 """
 USAGE:
 config, credentials, environment = get_config_credentials_environment()
+settings = Settings(config)
+-or-
+settings = Box(config)
 """
+
 
 class Settings():
     def __init__(self, config: dict):
@@ -123,14 +128,18 @@ def get_config_environment(config_path='config.yaml', credentials_path='credenti
 def get_config_credentials_environment(config_path='config.yaml', credentials_path='credentials.yaml'):
     """Get config, credentials, and environment with proper deep merging."""
     config = getYaml(config_path)
-    credentials = getYaml(credentials_path)
+
+    if credentials_path:
+        credentials = getYaml(credentials_path)
+    else:
+        credentials = {}
     
     # Deep-merge the credentials into the config
     config = deep_merge(config, credentials)
     
     env, environment = get_environment(config)
-    a = g(config, 'all', {})
-    c = g(config, env, {})
+    a = g(config, 'all', {}) or {}
+    c = g(config, env, {}) or {}
     
     # Deep merge instead of shallow merge
     config = deep_merge(a, c)

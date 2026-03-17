@@ -7,7 +7,7 @@ outFolder = r"D:\rob\zinclusive\policies"
 
 
 def convert_docx_to_md(inPath, outPath):
-    cmd= f"""pandoc -s "{inPath}" -o "{outPath}" --from docx --to markdown"""
+    cmd = f"""pandoc -s "{inPath}" -o "{outPath}" --from docx --to markdown"""
     subprocess.run(cmd, shell=True)
 
 
