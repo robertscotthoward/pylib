@@ -119,6 +119,10 @@ def get_config_environment(config_path='config.yaml', credentials_path='credenti
 
     if not a:
         return c, environment    # 
+
+    if not c:
+        return a, environment    # 
+
     # Deep merge instead of shallow merge
     config = deep_merge(a, c)
 
