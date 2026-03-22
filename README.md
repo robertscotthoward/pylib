@@ -1,6 +1,6 @@
 # Use this library in a new project
 * Copy the template files to the new folder.
-* 
+* uv add --editable ../../../../robertscotthoward/python/pylib
 
 
 # Lib

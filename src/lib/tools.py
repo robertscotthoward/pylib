@@ -732,12 +732,13 @@ def deep_merge(base: dict, override: dict) -> dict:
     Values from override will overwrite values in base, but nested dicts are merged.
     """
     for key, value in override.items():
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-            # Both are dicts - recursively merge
-            deep_merge(base[key], value)
-        else:
-            # Override the value (or add new key)
-            base[key] = value
+        if value:
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                # Both are dicts - recursively merge
+                deep_merge(base[key], value)
+            else:
+                # Override the value (or add new key)
+                base[key] = value
     return base
 
 

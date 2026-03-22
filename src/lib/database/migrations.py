@@ -76,7 +76,7 @@ class Migrations(ABC):
         # Generate migration for existing database
         M = []
         M.append(f"-- Migration for '{self.name}'")
-        M.append(f"-- Generated at {datetime.now().isoformat()}")
+        M.append(f"-- Generated at {NOW().isoformat()}")
         M.append("")
 
         # Get previous migration statements to avoid duplicates
@@ -132,7 +132,7 @@ class Migrations(ABC):
         from datetime import datetime
         M = []
         M.append(f"-- Base schema for '{self.name}'")
-        M.append(f"-- Generated at {datetime.now().isoformat()}")
+        M.append(f"-- Generated at {NOW().isoformat()}")
         M.append(f"-- This file contains complete CREATE TABLE statements for all tables")
         M.append("")
 
