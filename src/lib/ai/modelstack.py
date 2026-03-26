@@ -25,9 +25,23 @@ def clean_fence(s, fence = 'json') -> str:
 
 def clean_json(sJson) -> str:
     # Remove common markdown fence wrappers
+    from json_repair import repair_json
     s = clean_fence(sJson, 'json')
     s = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
     s = re.sub(r'\s+', ' ', s)  # collapse multiple spaces
+    if s[0] != '{':
+        if '{' in s and '}' in s:
+            # Get the part between the first { and the last }
+            s = s.split('{')[1]
+            s = s.rsplit('}')[0]
+            s = '{' + s + '}'
+        else:
+            return ''
+    try:
+        s = repair_json(s)
+    except Exception as e:
+        print(f"[ERROR] Failed to repair JSON: {e}")
+        return ''
     return s
 
 

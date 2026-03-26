@@ -239,7 +239,12 @@ def xls_bytes_to_markdown(byte_data):
 
 
 def docx_bytes_to_markdown(b : bytes) -> str:
-    document = Document(io.BytesIO(b))
+    try:
+        document = Document(io.BytesIO(b))
+    except Exception as e:
+        s = f"[ERROR] Failed to convert docx to markdown: {e}"
+        print(s)
+        return str(e)
     markdown_lines = []
     
     for paragraph in document.paragraphs:
