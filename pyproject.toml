@@ -36,6 +36,7 @@ dependencies = [
     "rerankers[transformers]>=0.10.0",
     "ruamel-yaml>=0.19.1",
     "striprtf>=0.0.26,<0.0.27",
+    "typer>=0.21.1",
     "xhtml2pdf>=0.2.17",
 ]
 
