@@ -155,9 +155,18 @@ def pdf_bytes_to_text(pdf_bytes: bytes) -> str:
 
 
 def convert_doc_to_docx(inPath, outPath=None):
-    wordconv_path = r"C:\Program Files\Microsoft Office\Updates\Download\PackageFiles\294A8FB0-79E3-4361-BCB8-E45108B95554\root\Office16\Wordconv.exe"
-    if not os.path.exists(wordconv_path):
-        print(f"❌ FILE NOT FOUND: Wordconv not found at '{wordconv_path}'")
+    # Resolve Wordconv.exe: config.yaml > glob search
+    wordconv_path = None
+    try:
+        config = getYaml('config.yaml') or {}
+        wordconv_path = g(config, 'all/wordconv_path')
+    except Exception:
+        pass
+    if not wordconv_path or not os.path.exists(wordconv_path):
+        candidates = glob.glob(r"C:\Program Files\Microsoft Office*\**\Wordconv.exe", recursive=True)
+        wordconv_path = candidates[0] if candidates else None
+    if not wordconv_path or not os.path.exists(wordconv_path):
+        print(f"❌ FILE NOT FOUND: Wordconv.exe not found. Set 'all/wordconv_path' in config.yaml.")
         return None
 
     if not os.path.exists(inPath):

@@ -2,7 +2,7 @@ from pathlib import Path
 import typer
 
 # Extensions that get_markdown() explicitly dispatches to (not text passthrough)
-CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".rtf", ".rdf", ".epub"}
+CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub"}
 
 
 def convert(
@@ -15,7 +15,7 @@ def convert(
     ),
 ):
     """Convert all supported files in FOLDER to markdown, skipping files that already have a .md sibling."""
-    from lib.ai.fileconvert import get_markdown
+    from lib.ai.fileconvert import get_markdown, convert_doc_to_docx
 
     converted = 0
     skipped = 0
@@ -34,7 +34,19 @@ def convert(
 
         typer.echo(f"Converting: {file_path}")
         try:
-            markdown = get_markdown(str(file_path))
+            convert_path = file_path
+
+            # .doc files must be converted to .docx first
+            if file_path.suffix.lower() == ".doc":
+                docx_path = file_path.with_suffix(".docx")
+                convert_doc_to_docx(str(file_path))
+                if not docx_path.exists():
+                    typer.echo(f"  Error: .doc to .docx conversion failed for {file_path.name}", err=True)
+                    errors += 1
+                    continue
+                convert_path = docx_path
+
+            markdown = get_markdown(str(convert_path))
             if markdown:
                 md_path.write_text(markdown, encoding="utf-8")
                 converted += 1

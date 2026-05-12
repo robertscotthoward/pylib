@@ -19,6 +19,8 @@ all:
   google:
     gdrive:
 
+  wordconv_path: 'C:\Program Files\Microsoft Office\root\Office16\Wordconv.exe'
+
 
 
 
