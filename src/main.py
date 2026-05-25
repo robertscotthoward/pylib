@@ -3,7 +3,13 @@ import fnmatch
 from typing import Optional
 import typer
 
-app = typer.Typer(help="pylib CLI tools.")
+app = typer.Typer(no_args_is_help=True)
+
+
+@app.callback()
+def main():
+    """pylib CLI tools."""
+
 
 CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub"}
 
