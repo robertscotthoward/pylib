@@ -209,6 +209,27 @@ class BedrockModelStack(ModelStack):
             print(f"\n[BEDROCK] Attempting to invoke model: {model_attempt}. Length of params: {len(json.dumps(params))}")
             # print(f"{json.dumps(params)}")
             try:
+                # Claude models use streaming to avoid read-timeout on large responses
+                if is_claude:
+                    with Spy('Invoke model (stream)') as spy:
+                        stream_response = self.bedrock_client.invoke_model_with_response_stream(
+                            modelId=model_attempt,
+                            body=json.dumps(params),
+                            contentType='application/json',
+                            accept='application/json'
+                        )
+                    chunks = []
+                    with Spy('Read stream') as spy:
+                        for event in stream_response['body']:
+                            chunk = json.loads(event['chunk']['bytes'])
+                            if chunk.get('type') == 'content_block_delta':
+                                delta = chunk.get('delta', {})
+                                if delta.get('type') == 'text_delta':
+                                    chunks.append(delta.get('text', ''))
+                    print(f"[BEDROCK] Successfully invoked model (stream): {model_attempt}")
+                    self._last_metadata = {}
+                    return ''.join(chunks)
+
                 with Spy('Invoke model') as spy:
                     response = self.bedrock_client.invoke_model(
                         modelId=model_attempt,
@@ -219,11 +240,11 @@ class BedrockModelStack(ModelStack):
                 with Spy('Get response body') as spy:
                     response_body = json.loads(response['body'].read())
                 print(f"[BEDROCK] Successfully invoked model: {model_attempt}")
-                
+
                 # Extract response and metadata
                 response_text = None
                 metadata = {}
-                
+
                 # Extract response based on model type
                 if is_claude:
                     response_text = response_body['content'][0]['text']
