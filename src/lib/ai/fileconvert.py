@@ -160,13 +160,50 @@ def _ensure_tessdata_prefix():
         os.environ['TESSDATA_PREFIX'] = tessdata_path
 
 
+def _reformat_ocr_markdown(markdown: str) -> str:
+    """Clean up Tesseract-OCR'd markdown by running it through a configured LLM.
+
+    Configured via config.yaml 'all/ocr_postprocess' — swap models/providers there.
+    'class: openai_compatible' works with any OpenAI-style /chat/completions API
+    (DeepInfra, OpenRouter, Together, a local vLLM server, etc.), so switching
+    providers is a config edit, not a code change. Falls back to the raw OCR
+    markdown if the model call fails or post-processing is disabled.
+    """
+    try:
+        from lib.configurations import get_config_credentials_environment
+        from lib.ai.modelstack import ModelStack
+
+        config, _, _ = get_config_credentials_environment()
+        pp = config.get('ocr_postprocess') or {}
+        if not pp.get('enabled', True):
+            return markdown
+
+        model_config = pp['model']
+        prompt_prefix = pp.get('prompt', 'Format the following document to make it more readable:')
+        modelstack = ModelStack.from_config(model_config)
+        result = modelstack.query(f"{prompt_prefix}\n\n{markdown}", max_tokens=model_config.get('max_tokens', 8192))
+        return result.strip() if result and result.strip() else markdown
+    except Exception as e:
+        print(f"[WARN] OCR post-processing formatting failed, using raw OCR markdown: {e}")
+        return markdown
+
+
 def pdf_bytes_to_markdown(bytes: bytes) -> str:
     import pymupdf4llm
     import pymupdf
     _ensure_tessdata_prefix()
     pdf_stream = io.BytesIO(bytes)
     doc = pymupdf.open(stream=pdf_stream, filetype="pdf")
-    return pymupdf4llm.to_markdown(doc)
+
+    # No native text layer on any page means Tesseract OCR is what produced the text.
+    used_ocr = not any(page.get_text().strip() for page in doc)
+
+    markdown = pymupdf4llm.to_markdown(doc)
+
+    if used_ocr and markdown and markdown.strip():
+        markdown = _reformat_ocr_markdown(markdown)
+
+    return markdown
 
 
 

@@ -21,6 +21,21 @@ all:
 
   wordconv_path: 'C:\Program Files\Microsoft Office\root\Office16\Wordconv.exe'
 
+  # Post-processes OCR'd (Tesseract) markdown through an LLM to clean up formatting.
+  # Swap providers by editing 'model' below — 'class: openai_compatible' works with
+  # any OpenAI-style /chat/completions API (DeepInfra, OpenRouter, Together, a local
+  # vLLM server, etc.), so switching providers is just base_url/model/api_key.
+  ocr_postprocess:
+    enabled: true
+    prompt: "Format the following document to make it more readable:"
+    model:
+      class: openai_compatible
+      provider: deepinfra
+      base_url: https://api.deepinfra.com/v1/openai
+      model: Qwen/Qwen3.6-35B-A3B
+      api_key_env: DEEPINFRA_TOKEN
+      max_tokens: 8192
+
 
 
 

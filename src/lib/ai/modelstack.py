@@ -62,6 +62,8 @@ class ModelStack:
             return OllamaModelStack(model_config)
         if cls == 'bedrock':
             return BedrockModelStack(model_config)
+        if cls == 'openai_compatible':
+            return OpenAICompatibleModelStack(model_config)
         raise ValueError(f"Unsupported model stack class: {cls}")
     
     def query(self, prompt, max_tokens=1024):
@@ -319,6 +321,44 @@ class BedrockModelStack(ModelStack):
         
         # If all retries failed, raise the last error
         raise Exception(f"Failed to invoke model after 3 attempts. Last error: {last_error}")
+
+
+class OpenAICompatibleModelStack(ModelStack):
+    """Works with any provider exposing an OpenAI-style /chat/completions endpoint
+    (DeepInfra, OpenRouter, Together, Groq, Fireworks, a local vLLM server, etc.).
+    Swap providers by changing 'base_url' / 'model' / 'api_key' in config.yaml —
+    no code changes needed.
+    """
+    def __init__(self, config):
+        super().__init__(config)
+
+    def query(self, prompt, max_tokens=1024):
+        base_url = self.config['base_url'].rstrip('/')
+        model = self.config['model']
+        api_key = self.config.get('api_key')
+        if not api_key and self.config.get('api_key_env'):
+            api_key = os.environ.get(self.config['api_key_env'])
+        max_tokens = from_metric(self.config.get('max_tokens', max_tokens))
+
+        url = f'{base_url}/chat/completions'
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': max_tokens,
+        }
+        if 'temperature' in self.config:
+            payload['temperature'] = self.config['temperature']
+        if 'top_p' in self.config:
+            payload['top_p'] = self.config['top_p']
+
+        r = requests.post(url, headers=headers, json=payload, timeout=self.config.get('timeout', 120))
+        if r.status_code != 200:
+            raise Exception(f"Request failed with status code {r.status_code}: {r.text}")
+        return r.json()['choices'][0]['message']['content']
 
 
 class TEMPLATE_ModelStack(ModelStack):
