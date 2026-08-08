@@ -1,5 +1,6 @@
 from pathlib import Path
 import fnmatch
+import os
 from typing import Optional
 import typer
 
@@ -86,6 +87,16 @@ def main():
 CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub", ".xlsx"}
 
 
+def _write_error_marker(md_path: Path, source_path: Path):
+    """Write an empty .md file to mark a failed conversion, so a future non-forced
+    run doesn't keep retrying it. Stamped with the source's mtime so it isn't
+    treated as stale (and re-attempted) until the source itself changes.
+    """
+    md_path.write_bytes(b"")
+    st = source_path.stat()
+    os.utime(md_path, (st.st_atime, st.st_mtime))
+
+
 def _matches_patterns(name: str, patterns: list[str]) -> bool:
     """True if name matches any pattern; bare extensions (e.g. '.pdf') act as suffix filters."""
     lower = name.lower()
@@ -162,6 +173,7 @@ def convert(
                 convert_doc_to_docx(str(file_path))
                 if not docx_path.exists():
                     typer.echo(f"  Error: .doc to .docx conversion failed for {file_path.name}", err=True)
+                    _write_error_marker(md_path, file_path)
                     errors += 1
                     continue
                 convert_path = docx_path
@@ -175,9 +187,11 @@ def convert(
                     converted += 1
             else:
                 typer.echo(f"  Warning: no content extracted from {file_path.name}", err=True)
+                _write_error_marker(md_path, file_path)
                 errors += 1
         except Exception as e:
             typer.echo(f"  Error converting {file_path.name}: {e}", err=True)
+            _write_error_marker(md_path, file_path)
             errors += 1
 
     typer.echo(
