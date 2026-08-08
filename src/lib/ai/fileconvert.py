@@ -141,6 +141,23 @@ def pdf_bytes_to_text(bytes: bytes) -> str:
     return text
 
 
+def _find_pylib_file(filename):
+    """Resolve a pylib config file (config.yaml / credentials.yaml).
+
+    First searches up from the current working directory, so a consuming project's
+    own config.yaml can override pylib's defaults (the documented convention). Falls
+    back to pylib's own copy shipped alongside this module, so `pylib convert` still
+    works when run against an arbitrary folder that isn't a pylib-consuming project
+    (e.g. a folder of documents with no config.yaml anywhere in its ancestry).
+    """
+    path = findPath(filename, throwIfNotFound=False)
+    if path:
+        return path
+    pylib_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    fallback = os.path.join(pylib_root, filename)
+    return fallback if os.path.exists(fallback) else None
+
+
 def _ensure_tessdata_prefix():
     """Point PyMuPDF's built-in OCR at Tesseract's language data, so scanned/image-only
     PDFs (no text layer) get OCR'd instead of silently producing empty markdown.
@@ -148,7 +165,8 @@ def _ensure_tessdata_prefix():
     if os.environ.get('TESSDATA_PREFIX'):
         return
     try:
-        config = getYaml('config.yaml') or {}
+        config_path = _find_pylib_file('config.yaml')
+        config = getYaml(config_path) if config_path else {}
         tessdata_path = g(config, 'all/tessdata_path')
     except Exception:
         tessdata_path = None
@@ -173,7 +191,9 @@ def _reformat_ocr_markdown(markdown: str) -> str:
         from lib.configurations import get_config_credentials_environment
         from lib.ai.modelstack import ModelStack
 
-        config, _, _ = get_config_credentials_environment()
+        config_path = _find_pylib_file('config.yaml')
+        credentials_path = _find_pylib_file('credentials.yaml')
+        config, _, _ = get_config_credentials_environment(config_path or 'config.yaml', credentials_path)
         pp = config.get('ocr_postprocess') or {}
         if not pp.get('enabled', True):
             return markdown

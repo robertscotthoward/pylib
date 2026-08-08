@@ -42,6 +42,9 @@ all:
       # and can vary a lot per document, occasionally leaving too little budget for the
       # visible answer. Kept generous to avoid silent truncation on messy OCR input.
       max_tokens: 32768
+      # Reasoning models can take a while on larger/multi-page documents; the
+      # OpenAICompatibleModelStack default (120s) is too tight for that.
+      timeout: 300
 
 
 
