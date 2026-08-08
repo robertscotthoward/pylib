@@ -27,14 +27,21 @@ all:
   # vLLM server, etc.), so switching providers is just base_url/model/api_key.
   ocr_postprocess:
     enabled: true
-    prompt: "Format the following document to make it more readable:"
+    prompt: >-
+      Format the following document to make it more readable: fix spacing, punctuation,
+      and structure, and organize it with clear headings and tables. Do not add, remove,
+      infer, or alter any facts, numbers, names, dates, or URLs — preserve them exactly as
+      given. Output only the reformatted document, with no preamble, commentary, or notes.
     model:
       class: openai_compatible
       provider: deepinfra
       base_url: https://api.deepinfra.com/v1/openai
       model: Qwen/Qwen3.6-35B-A3B
       api_key_env: DEEPINFRA_TOKEN
-      max_tokens: 8192
+      # Qwen3.6 is a reasoning model — hidden "thinking" tokens count against max_tokens
+      # and can vary a lot per document, occasionally leaving too little budget for the
+      # visible answer. Kept generous to avoid silent truncation on messy OCR input.
+      max_tokens: 32768
 
 
 
