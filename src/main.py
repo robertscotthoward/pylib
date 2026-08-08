@@ -83,7 +83,7 @@ def main():
     """pylib CLI tools."""
 
 
-CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub"}
+CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub", ".xlsx"}
 
 
 def _matches_patterns(name: str, patterns: list[str]) -> bool:
@@ -115,13 +115,23 @@ def convert(
         help="Pipe-delimited filename patterns to process (e.g. '.pdf|report*.docx'). "
              "When omitted, all supported file types are processed.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-convert every matching file, even when its .md is up to date.",
+    ),
 ):
-    """Convert all supported files in FOLDER to markdown, skipping files that already have a .md sibling."""
-    from lib.ai.fileconvert import get_markdown, convert_doc_to_docx
+    """Convert all supported files in FOLDER to markdown.
+
+    A file is converted when its .md sibling is missing or older than the file itself,
+    so edited sources are re-converted and up-to-date ones are skipped.
+    """
+    from lib.ai.fileconvert import get_markdown, convert_doc_to_docx, needs_conversion
 
     patterns: list[str] = [p.strip() for p in filter.split("|") if p.strip()] if filter else []
 
     converted = 0
+    updated = 0
     skipped = 0
     errors = 0
 
@@ -134,11 +144,16 @@ def convert(
             continue
 
         md_path = file_path.with_suffix(".md")
-        if md_path.exists():
+        if force:
+            stale = True
+        else:
+            stale = needs_conversion(str(file_path), str(md_path))
+        if not stale:
             skipped += 1
             continue
+        rebuild = md_path.exists()
 
-        typer.echo(f"Converting: {file_path}")
+        typer.echo(f"{'Re-converting' if rebuild else 'Converting'}: {file_path}")
         try:
             convert_path = file_path
 
@@ -154,7 +169,10 @@ def convert(
             markdown = get_markdown(str(convert_path))
             if markdown:
                 md_path.write_text(markdown, encoding="utf-8")
-                converted += 1
+                if rebuild:
+                    updated += 1
+                else:
+                    converted += 1
             else:
                 typer.echo(f"  Warning: no content extracted from {file_path.name}", err=True)
                 errors += 1
@@ -162,7 +180,10 @@ def convert(
             typer.echo(f"  Error converting {file_path.name}: {e}", err=True)
             errors += 1
 
-    typer.echo(f"\nDone: {converted} converted, {skipped} skipped (already have .md), {errors} errors")
+    typer.echo(
+        f"\nDone: {converted} converted, {updated} re-converted (source newer than .md), "
+        f"{skipped} skipped (.md up to date), {errors} errors"
+    )
 
 
 def _build_modelstack(model_class: str, model: str, host: str, region: str):

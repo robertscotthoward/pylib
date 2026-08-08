@@ -19,6 +19,19 @@ import pandas as pd
 
 
 
+def needs_conversion(source_path, target_path) -> bool:
+    """True when target is missing or older than source, i.e. the target is stale.
+
+    Equal timestamps count as up to date, so a target stamped with its source's
+    mtime (see convert_doc_to_docx) is not rebuilt on every run.
+    """
+    if not os.path.exists(target_path):
+        return True
+    if not os.path.exists(source_path):
+        return False
+    return os.path.getmtime(source_path) > os.path.getmtime(target_path)
+
+
 def get_text(filepath):
     """Get the text of a file. Only specific file extensions are supported."""
 
@@ -52,13 +65,15 @@ def get_markdown(filepath):
         if filepath.endswith(".pdf"):
             return pdf_bytes_to_markdown(readBytes(filepath))
         if filepath.endswith(".docx"):
-            return docx_to_text(filepath)
+            return docx_bytes_to_markdown(readBytes(filepath))
         if filepath.endswith(".rtf"):
             return rtf_to_text(filepath)
         if filepath.endswith(".rdf"):
             return rdf_to_text(filepath)
         if filepath.endswith(".epub"):
             return epub_to_markdown(filepath)
+        if filepath.endswith(".xlsx"):
+            return xlsx_bytes_to_markdown(readBytes(filepath))
         return readText(filepath)
     except Exception as e:
         print(f"Error getting text from {filepath}: {e}")
@@ -126,9 +141,29 @@ def pdf_bytes_to_text(bytes: bytes) -> str:
     return text
 
 
+def _ensure_tessdata_prefix():
+    """Point PyMuPDF's built-in OCR at Tesseract's language data, so scanned/image-only
+    PDFs (no text layer) get OCR'd instead of silently producing empty markdown.
+    """
+    if os.environ.get('TESSDATA_PREFIX'):
+        return
+    try:
+        config = getYaml('config.yaml') or {}
+        tessdata_path = g(config, 'all/tessdata_path')
+    except Exception:
+        tessdata_path = None
+    if not tessdata_path or not os.path.exists(tessdata_path):
+        candidates = glob.glob(r"C:\Program Files\Tesseract-OCR\tessdata") + \
+                     glob.glob(r"C:\Program Files (x86)\Tesseract-OCR\tessdata")
+        tessdata_path = candidates[0] if candidates else None
+    if tessdata_path and os.path.exists(tessdata_path):
+        os.environ['TESSDATA_PREFIX'] = tessdata_path
+
+
 def pdf_bytes_to_markdown(bytes: bytes) -> str:
     import pymupdf4llm
     import pymupdf
+    _ensure_tessdata_prefix()
     pdf_stream = io.BytesIO(bytes)
     doc = pymupdf.open(stream=pdf_stream, filetype="pdf")
     return pymupdf4llm.to_markdown(doc)
@@ -228,9 +263,18 @@ def transform_all_doc_to_docx(inFolder, outFolder):
 
 
 def docx_to_text(docx_path):
+    from docx.table import Table
+
     document = Document(docx_path)
-    text = '\n\n'.join(p.text for p in document.paragraphs)
-    return text
+    parts = []
+    for block in _iter_block_items(document):
+        if isinstance(block, Table):
+            lines = _table_to_markdown(block)
+            if lines:
+                parts.append('\n'.join(lines))
+        elif block.text.strip():
+            parts.append(block.text)
+    return '\n\n'.join(parts)
 
 
 def xls_bytes_to_markdown(byte_data):
@@ -247,44 +291,144 @@ def xls_bytes_to_markdown(byte_data):
 
 
 
-def docx_bytes_to_markdown(b : bytes) -> str:
+def _iter_block_items(parent):
+    """Yield Paragraph and Table objects from a document body or table cell, in document order.
+
+    python-docx exposes `document.paragraphs` and `document.tables` as separate flat lists,
+    which loses ordering and silently drops paragraphs nested inside table cells.
+    """
+    from docx.document import Document as _Document
+    from docx.oxml.ns import qn
+    from docx.table import Table, _Cell
+    from docx.text.paragraph import Paragraph
+
+    if isinstance(parent, _Document):
+        parent_elm = parent.element.body
+    elif isinstance(parent, _Cell):
+        parent_elm = parent._tc
+    else:
+        raise ValueError(f"Cannot iterate block items of {type(parent)}")
+
+    for child in parent_elm.iterchildren():
+        if child.tag == qn('w:p'):
+            yield Paragraph(child, parent)
+        elif child.tag == qn('w:tbl'):
+            yield Table(child, parent)
+
+
+def _unique_row_cells(row):
+    """Return a row's cells with horizontally/vertically merged duplicates collapsed."""
+    try:
+        cells = list(row.cells)
+    except (IndexError, ValueError):
+        # Irregular grids can break python-docx's cell mapping; fall back to raw <w:tc>.
+        from docx.table import _Cell
+        cells = [_Cell(tc, row.table) for tc in row._tr.tc_lst]
+
+    unique = []
+    seen = set()
+    for cell in cells:
+        key = id(cell._tc)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cell)
+    return unique
+
+
+def _cell_content(cell, indent):
+    """Return (inline_text, nested_table_lines) for a table cell."""
+    from docx.table import Table
+
+    texts = []
+    nested = []
+    for block in _iter_block_items(cell):
+        if isinstance(block, Table):
+            nested.extend(_table_to_markdown(block, indent + '  '))
+        elif block.text.strip():
+            texts.append(' '.join(block.text.split()))
+    return ' '.join(texts), nested
+
+
+def _table_to_markdown(table, indent=''):
+    """Render a table as indented bullets: two-cell rows become `label: value`."""
+    lines = []
+    for row in table.rows:
+        texts = []
+        nested = []
+        for cell in _unique_row_cells(row):
+            text, cell_nested = _cell_content(cell, indent)
+            texts.append(text)
+            nested.extend(cell_nested)
+
+        while texts and not texts[-1]:
+            texts.pop()
+
+        if len(texts) == 2:
+            lines.append(f"{indent}- {texts[0]}: {texts[1]}")
+        elif texts:
+            lines.append(f"{indent}- " + ' | '.join(texts))
+        lines.extend(nested)
+    return lines
+
+
+def _para_list_level(paragraph) -> int | None:
+    """Return 0-based list indent level from XML numbering, or None if not a list paragraph."""
+    from docx.oxml.ns import qn
+    pPr = paragraph._p.find(qn('w:pPr'))
+    if pPr is None:
+        return None
+    numPr = pPr.find(qn('w:numPr'))
+    if numPr is None:
+        return None
+    ilvl = numPr.find(qn('w:ilvl'))
+    if ilvl is None:
+        return None
+    try:
+        return int(ilvl.get(qn('w:val'), 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _paragraph_to_markdown(paragraph) -> str | None:
+    """Render a single paragraph as markdown, or None when it is empty."""
+    if not paragraph.text.strip():
+        return None
+    text = paragraph.text
+    style = paragraph.style.name if paragraph.style else ''
+
+    for n in range(1, 7):
+        if style.startswith(f'Heading {n}'):
+            return f"{'#' * n} {text}"
+
+    level = _para_list_level(paragraph)
+    if level is None and style.startswith('List'):
+        level = 0
+    if level is not None:
+        return f"{'  ' * level}- {text}"
+    return text
+
+
+def docx_bytes_to_markdown(b : bytes) -> str | None:
+    from docx.table import Table
+
     try:
         document = Document(io.BytesIO(b))
     except Exception as e:
-        s = f"[ERROR] Failed to convert docx to markdown: {e}"
-        print(s)
-        return str(e)
+        print(f"[ERROR] Failed to convert docx to markdown: {e}")
+        return None
     markdown_lines = []
-    
-    for paragraph in document.paragraphs:
-        if not paragraph.text.strip():
-            continue
-        text = paragraph.text
 
-        if paragraph.style:
-            style = paragraph.style.name
-            
-            if style.startswith('Heading 1'):
-                markdown_lines.append(f"# {text}")
-            elif style.startswith('Heading 2'):
-                markdown_lines.append(f"## {text}")
-            elif style.startswith('Heading 3'):
-                markdown_lines.append(f"### {text}")
-            elif style.startswith('Heading 4'):
-                markdown_lines.append(f"#### {text}")
-            elif style.startswith('Heading 5'):
-                markdown_lines.append(f"##### {text}")
-            elif style.startswith('Heading 6'):
-                markdown_lines.append(f"###### {text}")
-            elif style.startswith('List'):
-                level = paragraph.paragraph_format.left_indent
-                indent = '  ' * (level // 914400) if level else 0  # 914400 twips = 1 inch
-                markdown_lines.append(f"{indent}- {text}")
-            else:
-                markdown_lines.append(text)
+    for block in _iter_block_items(document):
+        if isinstance(block, Table):
+            lines = _table_to_markdown(block)
+            if lines:
+                markdown_lines.append('\n'.join(lines))
         else:
-            markdown_lines.append(text)
-    
+            md = _paragraph_to_markdown(block)
+            if md is not None:
+                markdown_lines.append(md)
+
     return '\n\n'.join(markdown_lines)
 
 
@@ -312,19 +456,12 @@ def xlsx_bytes_to_markdown(b : bytes) -> str:
     # We cannot just convert this to a markdown table because the columns are not always aligned and there migth be too many columns.
     excel_file = pd.ExcelFile(io.BytesIO(b))
     markdown_parts = []
-    
+
     for sheet_name in excel_file.sheet_names:
         df = pd.read_excel(io.BytesIO(b), sheet_name=sheet_name)
-        markdown_parts.append(f"## {sheet_name}\n")
+        markdown_parts.append(f"# {sheet_name}")
+        markdown_parts.append(df.to_csv(index=False, lineterminator='\n').strip('\n'))
 
-        # For each row in the dataframe, print "ROW: {i}"
-        #   For each column in the row, print "* {column}: {value}"
-        for i, row in df.iterrows():
-            markdown_parts.append(f"ROW: {i}")
-            for column in df.columns:
-                markdown_parts.append(f"* {column}: {row[column]}")
-            markdown_parts.append("")
-    
     return '\n'.join(markdown_parts)
 
 
@@ -403,17 +540,8 @@ def all_files_to_text(folder_path, cleaned_extension='.cleaned', overwrite=False
         if F.endswith(cleaned_extension):
             continue
         G = F + cleaned_extension
-        if os.path.exists(G) and not overwrite:
-            continue
-        # If the lastupdated time of F is greater than the lastupdated time of G, then overwrite G.
-        write = False
-        if os.path.exists(G):
-            if os.path.getmtime(F) > os.path.getmtime(G):
-                write = True
-        else:
-            write = True
-                
-        if write:
+        # Rewrite G when it is missing or older than F.
+        if overwrite or needs_conversion(F, G):
             text = get_text(F)
             # Replace all double spaces with single spaces
             lt = ""
