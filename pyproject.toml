@@ -12,6 +12,7 @@ dependencies = [
     "ebooklib>=0.20",
     "flagembedding>=1.3.5",
     "flashrank>=0.2.10",
+    "ftfy>=6.3.1",
     "langchain-text-splitters>=1.1.0",
     "llama-index-core>=0.14.13",
     "llama-index-embeddings-ollama>=0.8.6",
@@ -23,6 +24,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "nbconvert>=7.17.0",
     "nbformat>=5.10.4",
+    "nostril",
     "openpyxl>=3.1.5",
     "pdfplumber>=0.11.9",
     "pymupdf>=1.27.2.3",
@@ -54,3 +56,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lib"]
+
+[tool.uv.sources]
+nostril = { git = "https://github.com/casics/nostril" }

@@ -86,6 +86,15 @@ def main():
 
 CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub", ".xlsx"}
 
+# Text formats the clean command will touch when walking a folder. Binary formats are
+# excluded because reading them as text and writing the result back would destroy them.
+# An explicitly named file is always cleaned, whatever its extension.
+CLEANABLE_EXTENSIONS = {
+    ".txt", ".text", ".md", ".markdown", ".rst", ".log",
+    ".csv", ".tsv", ".json", ".yaml", ".yml", ".xml", ".html", ".htm",
+    ".ini", ".cfg", ".conf",
+}
+
 
 def _write_error_marker(md_path: Path, source_path: Path):
     """Write an empty .md file to mark a failed conversion, so a future non-forced
@@ -111,6 +120,91 @@ def _matches_patterns(name: str, patterns: list[str]) -> bool:
 
 
 @app.command()
+def clean(
+    path: Path = typer.Argument(
+        ...,
+        help="File to clean, or folder to clean recursively.",
+        exists=True,
+        resolve_path=True,
+    ),
+    filter: Optional[str] = typer.Option(
+        None,
+        "--filter",
+        "-f",
+        help="Pipe-delimited filename patterns to process (e.g. '.md|notes*.txt'). "
+             "Folder mode only; when omitted, all supported text types are processed.",
+    ),
+    keep_nonsense: bool = typer.Option(
+        False,
+        "--keep-nonsense",
+        help="Repair encoding with ftfy but keep every line, skipping nostril's gibberish check.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Report what would change without writing files or creating backups.",
+    ),
+):
+    """Clean up text files with ftfy and nostril.
+
+    Each file is read, cleaned, and rewritten only when the cleaning changed something.
+    The original is renamed to FILE.bak first, so nothing is lost. Unchanged files are
+    left alone, which makes the command safe to re-run.
+    """
+    from lib.ai.fileconvert import clean_text, read_text_best_effort
+
+    patterns: list[str] = [p.strip() for p in filter.split("|") if p.strip()] if filter else []
+
+    if path.is_file():
+        targets = [path]
+    else:
+        targets = [
+            p for p in sorted(path.rglob("*"))
+            if p.is_file()
+            and p.suffix.lower() in CLEANABLE_EXTENSIONS
+            and not p.name.endswith(".bak")
+            and not p.name.startswith("._")
+            and (not patterns or _matches_patterns(p.name, patterns))
+        ]
+
+    cleaned = 0
+    unchanged = 0
+    errors = 0
+
+    for file_path in targets:
+        try:
+            original = read_text_best_effort(file_path)
+            result = clean_text(original, drop_nonsense=not keep_nonsense)
+        except Exception as e:
+            typer.echo(f"  Error cleaning {file_path.name}: {e}", err=True)
+            errors += 1
+            continue
+
+        if result == original:
+            unchanged += 1
+            continue
+
+        removed = original.count("\n") - result.count("\n")
+        detail = f" ({removed} lines dropped)" if removed > 0 else ""
+        if dry_run:
+            typer.echo(f"Would clean: {file_path}{detail}")
+            cleaned += 1
+            continue
+
+        backup_path = file_path.with_name(file_path.name + ".bak")
+        os.replace(file_path, backup_path)
+        # newline='' keeps the \n that ftfy normalised to, instead of letting Windows
+        # rewrite them as \r\n, which would make every run report a change.
+        file_path.write_text(result, encoding="utf-8", newline="")
+        typer.echo(f"Cleaned: {file_path}{detail} (original saved to {backup_path.name})")
+        cleaned += 1
+
+    verb = "would be cleaned" if dry_run else "cleaned"
+    typer.echo(f"\nDone: {cleaned} {verb}, {unchanged} already clean, {errors} errors")
+
+
+@app.command()
 def convert(
     folder: Path = typer.Argument(
         ...,
@@ -131,11 +225,21 @@ def convert(
         "--force",
         help="Re-convert every matching file, even when its .md is up to date.",
     ),
+    retry_errors: bool = typer.Option(
+        False,
+        "--retry-errors",
+        help="Also retry files whose previous conversion failed, i.e. left an empty .md. "
+             "Files that converted successfully are still skipped.",
+    ),
 ):
     """Convert all supported files in FOLDER to markdown.
 
     A file is converted when its .md sibling is missing or older than the file itself,
     so edited sources are re-converted and up-to-date ones are skipped.
+
+    A failed conversion leaves an empty .md stamped with the source's mtime, which reads
+    as up to date and is skipped on later runs. --retry-errors treats those empty files
+    as missing and retries only them, without re-doing work that already succeeded.
     """
     from lib.ai.fileconvert import get_markdown, convert_doc_to_docx, needs_conversion
 
@@ -143,7 +247,9 @@ def convert(
 
     converted = 0
     updated = 0
+    retried = 0
     skipped = 0
+    empty_sources = 0
     errors = 0
 
     for file_path in sorted(folder.rglob("*")):
@@ -153,9 +259,23 @@ def convert(
             continue
         if file_path.suffix.lower() not in CONVERTIBLE_EXTENSIONS:
             continue
+        # macOS '._name.doc' sidecars carry a document's name but only resource-fork
+        # metadata, so every converter fails on them.
+        if file_path.name.startswith("._"):
+            continue
+        # A zero-byte source holds no document for any parser to read. Skipping it is
+        # not a failure, so it gets no error marker and does not inflate the error count.
+        if file_path.stat().st_size == 0:
+            empty_sources += 1
+            continue
 
         md_path = file_path.with_suffix(".md")
+        # An empty .md is the marker a failed conversion leaves behind, never a real result.
+        is_error_marker = md_path.is_file() and md_path.stat().st_size == 0
+
         if force:
+            stale = True
+        elif retry_errors and is_error_marker:
             stale = True
         else:
             stale = needs_conversion(str(file_path), str(md_path))
@@ -164,7 +284,13 @@ def convert(
             continue
         rebuild = md_path.exists()
 
-        typer.echo(f"{'Re-converting' if rebuild else 'Converting'}: {file_path}")
+        if is_error_marker:
+            action = "Retrying"
+        elif rebuild:
+            action = "Re-converting"
+        else:
+            action = "Converting"
+        typer.echo(f"{action}: {file_path}")
         try:
             convert_path = file_path
 
@@ -181,7 +307,9 @@ def convert(
             markdown = get_markdown(str(convert_path))
             if markdown:
                 md_path.write_text(markdown, encoding="utf-8")
-                if rebuild:
+                if is_error_marker:
+                    retried += 1
+                elif rebuild:
                     updated += 1
                 else:
                     converted += 1
@@ -194,10 +322,17 @@ def convert(
             _write_error_marker(md_path, file_path)
             errors += 1
 
-    typer.echo(
-        f"\nDone: {converted} converted, {updated} re-converted (source newer than .md), "
-        f"{skipped} skipped (.md up to date), {errors} errors"
-    )
+    summary = [
+        f"{converted} converted",
+        f"{updated} re-converted (source newer than .md)",
+        f"{retried} recovered (previous error)",
+        f"{skipped} skipped (.md up to date)",
+        f"{empty_sources} skipped (empty source file)",
+        f"{errors} errors",
+    ]
+    typer.echo("\nDone: " + ", ".join(summary))
+    if errors and not retry_errors:
+        typer.echo("Re-run with --retry-errors to retry only the files that failed.")
 
 
 def _build_modelstack(model_class: str, model: str, host: str, region: str):

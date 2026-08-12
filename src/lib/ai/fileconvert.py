@@ -4,8 +4,11 @@ a .docx file to a text file, or a .pdf file to a text file.
 """
 
 # uv add python-docx pypdf rdflib striprtf
+import contextlib
 import io
 import re
+import shutil
+import tempfile
 from docx import Document
 from lib.tools import ensureFolder, readText, writeText
 import ebooklib
@@ -17,6 +20,90 @@ import pandas as pd
 
 
 
+
+
+def read_text_best_effort(filepath) -> str:
+    """Read a text file whose encoding is unknown or already damaged.
+
+    Tries UTF-8 first, then the Windows and Latin-1 code pages that produce mojibake
+    rather than an error. clean_text() repairs whatever damage the fallback introduces.
+    """
+    with open(filepath, 'rb') as f:
+        raw = f.read()
+    for encoding in ('utf-8-sig', 'cp1252', 'latin-1'):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode('utf-8', errors='replace')
+
+
+def is_nonsense_line(line: str, min_letters: int = 12) -> bool:
+    """True when nostril judges a line to be gibberish, e.g. an OCR noise run.
+
+    nostril is asked about the whole line rather than word by word. Its accuracy
+    collapses at its six-character floor -- obvious junk like 'qwrtpz' and 'lkjhgf'
+    each score as sensible in isolation, while the line containing them scores as
+    nonsense -- so a line is the smallest unit worth asking about.
+
+    Lines with fewer than `min_letters` letters are never judged. Short lines are
+    where the detector is least reliable and where markdown syntax, headings, table
+    rows, and code fragments live.
+    """
+    letters = re.sub(r"[^A-Za-z]", "", line)
+    if len(letters) < min_letters:
+        return False
+    from nostril import nonsense
+    try:
+        return nonsense(line)
+    except ValueError:
+        # nostril declines to judge; keep the line rather than guess.
+        return False
+
+
+def clean_text(text: str, drop_nonsense: bool = True, min_letters: int = 12) -> str:
+    """Clean up mangled text with ftfy and nostril.
+
+    ftfy repairs the encoding layer: mojibake, doubly-encoded UTF-8, stray HTML
+    entities, ligatures, curly-quote damage, and control characters. It also
+    normalises line endings to \\n.
+
+    nostril handles the content layer, dropping whole lines it judges to be gibberish,
+    which is the shape OCR noise takes. Lines shorter than `min_letters` letters are
+    left alone; see is_nonsense_line for why.
+
+    Returns the cleaned text. Compare it against the input to tell whether anything changed.
+    """
+    import ftfy
+
+    text = ftfy.fix_text(text)
+    if not drop_nonsense:
+        return text
+
+    return '\n'.join(
+        line for line in text.split('\n')
+        if not is_nonsense_line(line, min_letters=min_letters)
+    )
+
+
+APPLE_DOUBLE_MAGIC = b'\x00\x05\x16\x07'
+
+
+def is_apple_double(filepath) -> bool:
+    """True for macOS AppleDouble sidecars, which carry a real document's name but not
+    its content.
+
+    Copying a folder from a Mac leaves a '._name.doc' beside every 'name.doc'. They hold
+    resource-fork metadata, so every converter fails on them with an unhelpful error.
+    The name is checked first because it costs nothing; the magic number confirms it.
+    """
+    if not os.path.basename(filepath).startswith('._'):
+        return False
+    try:
+        with open(filepath, 'rb') as f:
+            return f.read(4) == APPLE_DOUBLE_MAGIC
+    except OSError:
+        return False
 
 
 def needs_conversion(source_path, target_path) -> bool:
@@ -134,13 +221,6 @@ def rtf_to_text(filepath):
 
 
 
-def pdf_bytes_to_text(bytes: bytes) -> str:
-    import pdfplumber
-    with pdfplumber.open(io.BytesIO(bytes)) as pdf:
-        text = '\n\n'.join([page.extract_text(x_tolerance=5, y_tolerance=3, layout=True, x_density=7.25, y_density=13) for page in pdf.pages])
-    return text
-
-
 def _find_pylib_file(filename):
     """Resolve a pylib config file (config.yaml / credentials.yaml).
 
@@ -164,6 +244,10 @@ def _ensure_tessdata_prefix():
     """
     if os.environ.get('TESSDATA_PREFIX'):
         return
+    _locate_and_set_tessdata()
+
+
+def _locate_and_set_tessdata():
     try:
         config_path = _find_pylib_file('config.yaml')
         config = getYaml(config_path) if config_path else {}
@@ -208,22 +292,112 @@ def _reformat_ocr_markdown(markdown: str) -> str:
         return markdown
 
 
-def pdf_bytes_to_markdown(bytes: bytes) -> str:
+@contextlib.contextmanager
+def _ocr_available(enabled: bool):
+    """Turn PyMuPDF's built-in Tesseract OCR on or off for the duration of the block.
+
+    MuPDF only OCRs when it can find Tesseract's language data, so TESSDATA_PREFIX is
+    the on/off switch. Clearing it makes OCR impossible rather than merely unlikely,
+    which is what keeps the fast extraction tiers fast: on a scanned page MuPDF returns
+    empty in milliseconds instead of spending seconds in Tesseract.
+
+    The previous value is always restored, so converting a folder of PDFs cannot leak
+    an enabled OCR setting from one file into the next file's fast tier.
+    """
+    previous = os.environ.get('TESSDATA_PREFIX')
+    try:
+        if enabled:
+            _ensure_tessdata_prefix()
+        else:
+            os.environ.pop('TESSDATA_PREFIX', None)
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop('TESSDATA_PREFIX', None)
+        else:
+            os.environ['TESSDATA_PREFIX'] = previous
+
+
+def _pdf_pages_to_markdown(doc, pages) -> dict:
+    """Convert a subset of pages, returned as {0-based page index: markdown}."""
     import pymupdf4llm
+
+    if not pages:
+        return {}
+    chunks = pymupdf4llm.to_markdown(doc, pages=sorted(pages), page_chunks=True)
+    return {chunk['metadata']['page_number'] - 1: chunk['text'] for chunk in chunks}
+
+
+def pdf_bytes_to_markdown(bytes: bytes, allow_ocr: bool = True, verbose: bool = True) -> str:
+    """Convert a PDF to markdown, trying the fast extraction methods before OCR.
+
+    Three tiers, cheapest first, and OCR is only ever reached for pages the cheap
+    tiers could not read:
+
+    1. PyMuPDF via pymupdf4llm on pages that carry a native text layer. Milliseconds
+       per page, and it recovers headings, lists, and tables.
+    2. pdfplumber over the whole document, used when a text layer exists but tier 1
+       returned nothing -- a different parser sometimes reads what the layout analyser
+       cannot.
+    3. Tesseract OCR, restricted to the pages still empty after tiers 1 and 2, then
+       passed through the configured LLM to repair OCR damage.
+
+    Tiers 1 and 2 run with OCR switched off at the environment level, so a scanned page
+    cannot silently pull Tesseract into the fast path. Pass allow_ocr=False to skip
+    tier 3 entirely and accept whatever the fast tiers found.
+    """
     import pymupdf
-    _ensure_tessdata_prefix()
-    pdf_stream = io.BytesIO(bytes)
-    doc = pymupdf.open(stream=pdf_stream, filetype="pdf")
 
-    # No native text layer on any page means Tesseract OCR is what produced the text.
-    used_ocr = not any(page.get_text().strip() for page in doc)
+    doc = pymupdf.open(stream=io.BytesIO(bytes), filetype="pdf")
+    total = doc.page_count
+    native_pages = [i for i, page in enumerate(doc) if page.get_text().strip()]
 
-    markdown = pymupdf4llm.to_markdown(doc)
+    # Tier 1 -- native text layer only. OCR is switched off, so this cannot be slow.
+    with _ocr_available(False):
+        pages_md = _pdf_pages_to_markdown(doc, native_pages)
 
-    if used_ocr and markdown and markdown.strip():
-        markdown = _reformat_ocr_markdown(markdown)
+        missing = [i for i in range(total) if not pages_md.get(i, '').strip()]
 
-    return markdown
+        # Tier 2 -- a text layer exists but the layout analyser produced nothing from it.
+        if missing and native_pages and not any(md.strip() for md in pages_md.values()):
+            plumbed = pdf_bytes_to_text(bytes)
+            if plumbed.strip():
+                if verbose:
+                    print(f"  PDF text: pdfplumber fallback ({total} pages)")
+                return plumbed
+
+    if not missing:
+        if verbose:
+            print(f"  PDF text: native text layer ({total} pages, no OCR needed)")
+        return _join_pages(pages_md)
+
+    if not allow_ocr:
+        if verbose:
+            print(f"  PDF text: native text layer, {len(missing)} of {total} pages skipped (OCR disabled)")
+        return _join_pages(pages_md)
+
+    # Tier 3 -- last resort, and only for the pages nothing else could read.
+    if verbose:
+        print(f"  PDF text: Tesseract OCR on {len(missing)} of {total} pages (slow path)")
+    with _ocr_available(True):
+        ocr_md = _pdf_pages_to_markdown(doc, missing)
+
+    if len(missing) == total:
+        # Whole document scanned: one LLM call over the joined text keeps cost down.
+        joined = _join_pages(ocr_md)
+        return _reformat_ocr_markdown(joined) if joined.strip() else joined
+
+    # Mixed document: repair each OCR'd page on its own so page order is preserved.
+    for index, md in ocr_md.items():
+        pages_md[index] = _reformat_ocr_markdown(md) if md.strip() else md
+    return _join_pages(pages_md)
+
+
+def _join_pages(pages_md: dict) -> str:
+    """Join per-page markdown in page order, dropping pages that came back empty."""
+    return '\n\n'.join(
+        pages_md[index] for index in sorted(pages_md) if pages_md[index].strip()
+    )
 
 
 
@@ -240,7 +414,9 @@ def pdf_to_text(filepath):
 def pdf_bytes_to_text(pdf_bytes: bytes) -> str:
     import pdfplumber
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        text = '\n\n'.join([page.extract_text(x_tolerance=5, y_tolerance=3, layout=True, x_density=7.25, y_density=13) for page in pdf.pages])
+        # extract_text returns None for a page with no text layer; '' keeps the join working.
+        text = '\n\n'.join([page.extract_text(x_tolerance=5, y_tolerance=3, layout=True, x_density=7.25, y_density=13) or ''
+                            for page in pdf.pages])
     return text
 
 
@@ -258,47 +434,68 @@ def convert_doc_to_docx(inPath, outPath=None):
         candidates = glob.glob(r"C:\Program Files\Microsoft Office*\**\Wordconv.exe", recursive=True)
         wordconv_path = candidates[0] if candidates else None
     if not wordconv_path or not os.path.exists(wordconv_path):
-        print(f"❌ FILE NOT FOUND: Wordconv.exe not found. Set 'all/wordconv_path' in config.yaml.")
+        print(f"FILE NOT FOUND: Wordconv.exe not found. Set 'all/wordconv_path' in config.yaml.")
         return None
 
     if not os.path.exists(inPath):
         print(f"Error: Source file not found at '{inPath}'")
         return None
-        
-    inPath = inPath.replace('\\', '/')
-    if outPath:
-        outPath = outPath.replace('\\', '/')
-    else:
-        outDir = os.path.dirname(inPath)
-        base_name = os.path.splitext(os.path.basename(inPath))[0]
-        outPath = os.path.join(outDir, f"{base_name}.docx")
-    
-    # if os.path.exists(docx_path):
-    #     # Set the last updated time to the doc file
-    #     os.utime(docx_path, (os.path.getatime(doc_path), os.path.getmtime(doc_path)))
 
-    if not os.path.exists(outPath):
-        try:
-            outPath = outPath.replace('\\', '/')
-            ensureFolder(os.path.dirname(outPath))
-            print(f"Converting '{inPath}' to text using docx...")
+    if is_apple_double(inPath):
+        print(f"SKIPPED: '{os.path.basename(inPath)}' is a macOS resource fork, not a document.")
+        return None
+
+    if not outPath:
+        outPath = os.path.splitext(inPath)[0] + ".docx"
+
+    if os.path.exists(outPath):
+        return outPath
+
+    try:
+        ensureFolder(os.path.dirname(outPath))
+        print(f"Converting '{inPath}' to docx...")
+
+        # Wordconv is a legacy MAX_PATH application: it fails with exit code -1 on any
+        # path near or beyond 260 characters, even though Python and NTFS handle those
+        # paths fine. Staging both sides through a short temp directory keeps Wordconv
+        # well inside its limit no matter how deep the real file is buried.
+        # ignore_cleanup_errors: Wordconv can outlive its own exit code and keep a handle
+        # on the staging directory, which turns the teardown into a PermissionError.
+        with tempfile.TemporaryDirectory(prefix="pylib_doc_", ignore_cleanup_errors=True) as staging:
+            staged_in = os.path.join(staging, "in.doc")
+            staged_out = os.path.join(staging, "out.docx")
+            shutil.copyfile(inPath, staged_in)
+
+            # No cwd: the staged paths are absolute, and making staging the child's
+            # working directory is what stops it being deletable afterwards.
             subprocess.run([
                 wordconv_path,
                 "-oice",
                 "-nme",
-                inPath,
-                outPath
-            ], check=True, cwd=os.path.dirname(outPath), capture_output=True)
+                staged_in,
+                staged_out
+            ], check=True, capture_output=True)
 
-            # Set the last updated time to the docx file
-            os.utime(outPath, (os.path.getatime(inPath), os.path.getmtime(inPath)))
-           
-        except FileNotFoundError:
-            print("❌ CONVERSION FAILED: 'Wordconv' command not found. Ensure Pandoc is installed.")
-            return None
-        except subprocess.CalledProcessError as e:
-            print(f"❌ CONVERSION FAILED: Wordconv error. Output: {e.stderr.decode()}")
-            return None
+            if not os.path.exists(staged_out):
+                print(f"CONVERSION FAILED: Wordconv reported success but wrote no file for '{inPath}'")
+                return None
+
+            shutil.move(staged_out, outPath)
+
+        # Set the last updated time to the docx file
+        os.utime(outPath, (os.path.getatime(inPath), os.path.getmtime(inPath)))
+        return outPath
+
+    except FileNotFoundError:
+        print("CONVERSION FAILED: 'Wordconv.exe' not found. Set 'all/wordconv_path' in config.yaml.")
+        return None
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode(errors="replace").strip() or f"exit code {e.returncode}"
+        print(f"CONVERSION FAILED: Wordconv error on '{os.path.basename(inPath)}': {detail}")
+        return None
+    except OSError as e:
+        print(f"CONVERSION FAILED: {type(e).__name__} on '{os.path.basename(inPath)}': {e}")
+        return None
 
 
 
