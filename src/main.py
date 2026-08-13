@@ -231,6 +231,34 @@ def convert(
         help="Also retry files whose previous conversion failed, i.e. left an empty .md. "
              "Files that converted successfully are still skipped.",
     ),
+    redo_ocr: bool = typer.Option(
+        False,
+        "--redo-ocr",
+        help="Also re-convert scanned PDFs that require OCR, even when their .md looks up "
+             "to date. Use after changing the OCR repair model. Text-layer PDFs and every "
+             "other file type are left alone.",
+    ),
+    ocr_workers: int = typer.Option(
+        8,
+        "--ocr-workers",
+        min=1,
+        help="How many OCR repair calls to run concurrently. The repair is a network "
+             "round trip, so raising this shortens a scan-heavy run; 1 makes it sequential.",
+    ),
+    ocr_processes: Optional[int] = typer.Option(
+        None,
+        "--ocr-processes",
+        min=1,
+        help="How many CPU processes Tesseract may use to OCR pages of one PDF. "
+             "Defaults to min(8, cpu count); 1 disables the pool.",
+    ),
+    older_than: Optional[str] = typer.Option(
+        None,
+        "--older-than",
+        help="With --redo-ocr, only re-convert when the existing .md predates this date "
+             "(YYYY-MM-DD or YYYY-MM-DDTHH:MM). Use it to redo scans from before a model "
+             "change without touching newer, already-good output.",
+    ),
 ):
     """Convert all supported files in FOLDER to markdown.
 
@@ -240,10 +268,32 @@ def convert(
     A failed conversion leaves an empty .md stamped with the source's mtime, which reads
     as up to date and is skipped on later runs. --retry-errors treats those empty files
     as missing and retries only them, without re-doing work that already succeeded.
+
+    Scanned PDFs are handled in two stages. Tesseract runs inline because it takes about a
+    second, while the LLM repair that follows is a much slower network call, so those are
+    queued to a worker pool and collected at the end. Fast documents keep converting while
+    the repairs are in flight.
     """
-    from lib.ai.fileconvert import get_markdown, convert_doc_to_docx, needs_conversion
+    from concurrent.futures import ThreadPoolExecutor
+    from lib.ai.fileconvert import (
+        get_markdown, convert_doc_to_docx, needs_conversion, pdf_needs_ocr,
+        reformat_ocr_markdown,
+    )
 
     patterns: list[str] = [p.strip() for p in filter.split("|") if p.strip()] if filter else []
+
+    if ocr_processes:
+        # fileconvert reads this per call, so setting it here reaches the OCR pool.
+        os.environ["PYLIB_OCR_WORKERS"] = str(ocr_processes)
+
+    cutoff = None
+    if older_than:
+        from datetime import datetime
+        try:
+            cutoff = datetime.fromisoformat(older_than).timestamp()
+        except ValueError:
+            typer.echo(f"Invalid --older-than '{older_than}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM.", err=True)
+            raise typer.Exit(1)
 
     converted = 0
     updated = 0
@@ -251,81 +301,150 @@ def convert(
     skipped = 0
     empty_sources = 0
     errors = 0
+    repaired = 0
 
-    for file_path in sorted(folder.rglob("*")):
-        if not file_path.is_file():
-            continue
-        if patterns and not _matches_patterns(file_path.name, patterns):
-            continue
-        if file_path.suffix.lower() not in CONVERTIBLE_EXTENSIONS:
-            continue
-        # macOS '._name.doc' sidecars carry a document's name but only resource-fork
-        # metadata, so every converter fails on them.
-        if file_path.name.startswith("._"):
-            continue
-        # A zero-byte source holds no document for any parser to read. Skipping it is
-        # not a failure, so it gets no error marker and does not inflate the error count.
-        if file_path.stat().st_size == 0:
-            empty_sources += 1
-            continue
+    # Scanned PDFs whose LLM repair is still in flight: (future, raw markdown, paths, flags).
+    pending: list[tuple] = []
 
-        md_path = file_path.with_suffix(".md")
-        # An empty .md is the marker a failed conversion leaves behind, never a real result.
-        is_error_marker = md_path.is_file() and md_path.stat().st_size == 0
-
-        if force:
-            stale = True
-        elif retry_errors and is_error_marker:
-            stale = True
-        else:
-            stale = needs_conversion(str(file_path), str(md_path))
-        if not stale:
-            skipped += 1
-            continue
-        rebuild = md_path.exists()
-
+    def record_success(is_error_marker: bool, rebuild: bool):
+        nonlocal converted, updated, retried
         if is_error_marker:
-            action = "Retrying"
+            retried += 1
         elif rebuild:
-            action = "Re-converting"
+            updated += 1
         else:
-            action = "Converting"
-        typer.echo(f"{action}: {file_path}")
-        try:
-            convert_path = file_path
+            converted += 1
 
-            if file_path.suffix.lower() == ".doc":
-                docx_path = file_path.with_suffix(".docx")
-                convert_doc_to_docx(str(file_path))
-                if not docx_path.exists():
-                    typer.echo(f"  Error: .doc to .docx conversion failed for {file_path.name}", err=True)
+    def flush_pending(block: bool):
+        """Write finished OCR repairs to disk.
+
+        Called after every file with block=False so each document lands as soon as its
+        repair returns. That keeps progress durable: interrupt the run and everything
+        already written is complete, so re-running skips it instead of redoing it.
+        """
+        nonlocal repaired, errors
+        ready = list(pending) if block else [job for job in pending if job[0].done()]
+        for job in ready:
+            future, raw, md_path, source_path, was_error_marker, was_rebuild = job
+            pending.remove(job)
+            try:
+                text = future.result()
+            except Exception as e:
+                # Keep the raw OCR rather than losing the page to a failed network call.
+                typer.echo(f"  Warning: OCR repair failed for {source_path.name}, keeping raw OCR: {e}", err=True)
+                text = raw
+            try:
+                md_path.write_text(text or raw, encoding="utf-8")
+                record_success(was_error_marker, was_rebuild)
+                repaired += 1
+                typer.echo(f"  OCR done: {source_path.name}")
+            except Exception as e:
+                typer.echo(f"  Error writing {md_path.name}: {e}", err=True)
+                errors += 1
+
+    pool = ThreadPoolExecutor(max_workers=ocr_workers)
+    try:
+        for file_path in sorted(folder.rglob("*")):
+            # Land any repair that finished while the previous files were converting.
+            flush_pending(block=False)
+            if not file_path.is_file():
+                continue
+            if patterns and not _matches_patterns(file_path.name, patterns):
+                continue
+            if file_path.suffix.lower() not in CONVERTIBLE_EXTENSIONS:
+                continue
+            # macOS '._name.doc' sidecars carry a document's name but only resource-fork
+            # metadata, so every converter fails on them.
+            if file_path.name.startswith("._"):
+                continue
+            # A zero-byte source holds no document for any parser to read. Skipping it is
+            # not a failure, so it gets no error marker and does not inflate the error count.
+            if file_path.stat().st_size == 0:
+                empty_sources += 1
+                continue
+
+            md_path = file_path.with_suffix(".md")
+            # An empty .md is the marker a failed conversion leaves behind, never a real result.
+            is_error_marker = md_path.is_file() and md_path.stat().st_size == 0
+            is_pdf = file_path.suffix.lower() == ".pdf"
+            scanned = None  # resolved lazily; opening every PDF twice is wasted work
+
+            if force:
+                stale = True
+            elif retry_errors and is_error_marker:
+                stale = True
+            else:
+                stale = needs_conversion(str(file_path), str(md_path))
+                if not stale and redo_ocr and is_pdf:
+                    # Only pay for opening the PDF once the date filter has passed.
+                    fresh_enough = cutoff is not None and md_path.exists() and md_path.stat().st_mtime >= cutoff
+                    if not fresh_enough:
+                        scanned = pdf_needs_ocr(str(file_path))
+                        stale = scanned
+            if not stale:
+                skipped += 1
+                continue
+            rebuild = md_path.exists()
+
+            if is_error_marker:
+                action = "Retrying"
+            elif rebuild:
+                action = "Re-converting"
+            else:
+                action = "Converting"
+            typer.echo(f"{action}: {file_path}")
+            try:
+                convert_path = file_path
+
+                if file_path.suffix.lower() == ".doc":
+                    docx_path = file_path.with_suffix(".docx")
+                    convert_doc_to_docx(str(file_path))
+                    if not docx_path.exists():
+                        typer.echo(f"  Error: .doc to .docx conversion failed for {file_path.name}", err=True)
+                        _write_error_marker(md_path, file_path)
+                        errors += 1
+                        continue
+                    convert_path = docx_path
+
+                if scanned is None and is_pdf:
+                    scanned = pdf_needs_ocr(str(convert_path))
+
+                if scanned:
+                    # OCR inline (about a second), then hand the slow repair to the pool and
+                    # move on to the next file instead of blocking on the network.
+                    raw = get_markdown(str(convert_path), repair_ocr=False)
+                    if raw and raw.strip():
+                        future = pool.submit(reformat_ocr_markdown, raw)
+                        pending.append((future, raw, md_path, file_path, is_error_marker, rebuild))
+                        continue
+                    markdown = raw
+                else:
+                    markdown = get_markdown(str(convert_path))
+
+                if markdown:
+                    md_path.write_text(markdown, encoding="utf-8")
+                    record_success(is_error_marker, rebuild)
+                else:
+                    typer.echo(f"  Warning: no content extracted from {file_path.name}", err=True)
                     _write_error_marker(md_path, file_path)
                     errors += 1
-                    continue
-                convert_path = docx_path
-
-            markdown = get_markdown(str(convert_path))
-            if markdown:
-                md_path.write_text(markdown, encoding="utf-8")
-                if is_error_marker:
-                    retried += 1
-                elif rebuild:
-                    updated += 1
-                else:
-                    converted += 1
-            else:
-                typer.echo(f"  Warning: no content extracted from {file_path.name}", err=True)
+            except Exception as e:
+                typer.echo(f"  Error converting {file_path.name}: {e}", err=True)
                 _write_error_marker(md_path, file_path)
                 errors += 1
-        except Exception as e:
-            typer.echo(f"  Error converting {file_path.name}: {e}", err=True)
-            _write_error_marker(md_path, file_path)
-            errors += 1
+
+        # Collect whatever OCR repairs are still running after the walk finished.
+        if pending:
+            typer.echo(f"\nCollecting {len(pending)} OCR repair(s) still in flight...")
+        flush_pending(block=True)
+    finally:
+        pool.shutdown(wait=True)
 
     summary = [
         f"{converted} converted",
         f"{updated} re-converted (source newer than .md)",
         f"{retried} recovered (previous error)",
+        f"{repaired} via OCR",
         f"{skipped} skipped (.md up to date)",
         f"{empty_sources} skipped (empty source file)",
         f"{errors} errors",

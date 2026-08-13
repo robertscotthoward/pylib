@@ -9,6 +9,7 @@ import io
 import re
 import shutil
 import tempfile
+import threading
 from docx import Document
 from lib.tools import ensureFolder, readText, writeText
 import ebooklib
@@ -143,14 +144,18 @@ def get_text(filepath):
 
 
 
-def get_markdown(filepath):
-    """Get the text of a file. Only specific file extensions are supported."""
+def get_markdown(filepath, repair_ocr: bool = True):
+    """Get the text of a file. Only specific file extensions are supported.
+
+    repair_ocr=False skips the LLM repair pass on OCR'd PDFs, letting a caller schedule
+    those slow network calls itself. It has no effect on any other file type.
+    """
 
     try:
         if not os.path.exists(filepath):
             return None
         if filepath.endswith(".pdf"):
-            return pdf_bytes_to_markdown(readBytes(filepath))
+            return pdf_bytes_to_markdown(readBytes(filepath), repair_ocr=repair_ocr)
         if filepath.endswith(".docx"):
             return docx_bytes_to_markdown(readBytes(filepath))
         if filepath.endswith(".rtf"):
@@ -262,7 +267,53 @@ def _locate_and_set_tessdata():
         os.environ['TESSDATA_PREFIX'] = tessdata_path
 
 
-def _reformat_ocr_markdown(markdown: str) -> str:
+def pdf_needs_ocr(filepath) -> bool:
+    """True when a PDF has any page without a native text layer, i.e. OCR is required.
+
+    Cheap: it reads the text objects already in the file and never runs OCR, so it is
+    safe to call while deciding how to schedule work.
+    """
+    import pymupdf
+    try:
+        with pymupdf.open(filepath) as doc:
+            if doc.page_count == 0:
+                return False
+            return any(not page.get_text().strip() for page in doc)
+    except Exception:
+        return False
+
+
+# Total LLM repair calls allowed in flight at once, across every caller in the process.
+# The repair endpoint slows down under load, and a slow response becomes a timeout, so
+# concurrency has to be capped globally rather than per document: N documents each
+# repairing M pages would otherwise put N*M requests on the wire.
+LLM_CONCURRENCY = int(os.environ.get('PYLIB_LLM_CONCURRENCY', '4'))
+_llm_semaphore = threading.BoundedSemaphore(LLM_CONCURRENCY)
+
+# Above this many characters, one repair call risks exceeding max_tokens and truncating
+# silently, so a long document is repaired page by page instead.
+MAX_SINGLE_REPAIR_CHARS = 24000
+
+
+def _repair_pages_concurrently(pages: dict) -> dict:
+    """Repair several OCR'd pages at once, returning {index: repaired markdown}.
+
+    Page repairs are independent network calls, so they run concurrently and are
+    reassembled by index. The global semaphore still bounds what reaches the endpoint.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    indexes = [i for i, md in pages.items() if md.strip()]
+    if not indexes:
+        return dict(pages)
+    with ThreadPoolExecutor(max_workers=min(len(indexes), LLM_CONCURRENCY)) as pool:
+        repaired = list(pool.map(reformat_ocr_markdown, [pages[i] for i in indexes]))
+    result = dict(pages)
+    result.update(dict(zip(indexes, repaired)))
+    return result
+
+
+def reformat_ocr_markdown(markdown: str) -> str:
     """Clean up Tesseract-OCR'd markdown by running it through a configured LLM.
 
     Configured via config.yaml 'all/ocr_postprocess' — swap models/providers there.
@@ -285,7 +336,9 @@ def _reformat_ocr_markdown(markdown: str) -> str:
         model_config = pp['model']
         prompt_prefix = pp.get('prompt', 'Format the following document to make it more readable:')
         modelstack = ModelStack.from_config(model_config)
-        result = modelstack.query(f"{prompt_prefix}\n\n{markdown}", max_tokens=model_config.get('max_tokens', 8192))
+        with _llm_semaphore:
+            result = modelstack.query(f"{prompt_prefix}\n\n{markdown}",
+                                      max_tokens=model_config.get('max_tokens', 8192))
         return result.strip() if result and result.strip() else markdown
     except Exception as e:
         print(f"[WARN] OCR post-processing formatting failed, using raw OCR markdown: {e}")
@@ -318,6 +371,61 @@ def _ocr_available(enabled: bool):
             os.environ['TESSDATA_PREFIX'] = previous
 
 
+def _ocr_worker_count() -> int:
+    """How many OCR processes to use. PYLIB_OCR_WORKERS overrides; 1 disables the pool."""
+    override = os.environ.get('PYLIB_OCR_WORKERS')
+    if override and override.isdigit() and int(override) > 0:
+        return int(override)
+    return min(8, os.cpu_count() or 1)
+
+
+def _ocr_page_worker(task):
+    """OCR a single page in a child process. Returns (page index, markdown).
+
+    Module level and taking only picklable arguments, because ProcessPoolExecutor has to
+    pickle it. Each child opens the PDF itself: PyMuPDF objects do not cross processes,
+    and passing a path beats shipping the whole file to every worker.
+    """
+    pdf_path, index, tessdata = task
+    if tessdata:
+        os.environ['TESSDATA_PREFIX'] = tessdata
+    import pymupdf
+    import pymupdf4llm
+    with pymupdf.open(pdf_path) as doc:
+        chunks = pymupdf4llm.to_markdown(doc, pages=[index], page_chunks=True)
+    return index, (chunks[0]['text'] if chunks else '')
+
+
+def _ocr_pages(doc, pdf_bytes: bytes, pages, verbose: bool) -> dict:
+    """OCR the given pages, in parallel processes when that is worth the startup cost.
+
+    Tesseract is CPU-bound and single-threaded per page, so pages fan out across cores.
+    Processes rather than threads because PyMuPDF is not thread-safe. One page, or a
+    worker count of 1, runs inline instead: spawning a process costs about a second.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+
+    workers = min(_ocr_worker_count(), len(pages))
+    if workers <= 1 or len(pages) <= 1:
+        return _pdf_pages_to_markdown(doc, pages)
+
+    tessdata = os.environ.get('TESSDATA_PREFIX')
+    if verbose:
+        print(f"  OCR: {len(pages)} pages across {workers} processes")
+    try:
+        with tempfile.TemporaryDirectory(prefix="pylib_ocr_") as staging:
+            staged = os.path.join(staging, "doc.pdf")
+            with open(staged, 'wb') as f:
+                f.write(pdf_bytes)
+            tasks = [(staged, index, tessdata) for index in sorted(pages)]
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                return dict(pool.map(_ocr_page_worker, tasks))
+    except Exception as e:
+        # A pool that cannot start is not a reason to lose the document.
+        print(f"[WARN] Parallel OCR unavailable ({e}); falling back to sequential OCR.")
+        return _pdf_pages_to_markdown(doc, pages)
+
+
 def _pdf_pages_to_markdown(doc, pages) -> dict:
     """Convert a subset of pages, returned as {0-based page index: markdown}."""
     import pymupdf4llm
@@ -328,7 +436,8 @@ def _pdf_pages_to_markdown(doc, pages) -> dict:
     return {chunk['metadata']['page_number'] - 1: chunk['text'] for chunk in chunks}
 
 
-def pdf_bytes_to_markdown(bytes: bytes, allow_ocr: bool = True, verbose: bool = True) -> str:
+def pdf_bytes_to_markdown(bytes: bytes, allow_ocr: bool = True, verbose: bool = True,
+                          repair_ocr: bool = True) -> str:
     """Convert a PDF to markdown, trying the fast extraction methods before OCR.
 
     Three tiers, cheapest first, and OCR is only ever reached for pages the cheap
@@ -345,6 +454,11 @@ def pdf_bytes_to_markdown(bytes: bytes, allow_ocr: bool = True, verbose: bool = 
     Tiers 1 and 2 run with OCR switched off at the environment level, so a scanned page
     cannot silently pull Tesseract into the fast path. Pass allow_ocr=False to skip
     tier 3 entirely and accept whatever the fast tiers found.
+
+    repair_ocr=False returns the raw OCR text without the LLM repair pass. OCR takes about
+    a second while the repair is a network round trip an order of magnitude slower, so a
+    caller converting many files can turn it off here and run the repairs concurrently
+    (see pdf_needs_ocr and reformat_ocr_markdown).
     """
     import pymupdf
 
@@ -380,16 +494,21 @@ def pdf_bytes_to_markdown(bytes: bytes, allow_ocr: bool = True, verbose: bool = 
     if verbose:
         print(f"  PDF text: Tesseract OCR on {len(missing)} of {total} pages (slow path)")
     with _ocr_available(True):
-        ocr_md = _pdf_pages_to_markdown(doc, missing)
+        ocr_md = _ocr_pages(doc, bytes, missing, verbose)
 
-    if len(missing) == total:
-        # Whole document scanned: one LLM call over the joined text keeps cost down.
-        joined = _join_pages(ocr_md)
-        return _reformat_ocr_markdown(joined) if joined.strip() else joined
+    if not repair_ocr:
+        pages_md.update(ocr_md)
+        return _join_pages(pages_md)
 
-    # Mixed document: repair each OCR'd page on its own so page order is preserved.
-    for index, md in ocr_md.items():
-        pages_md[index] = _reformat_ocr_markdown(md) if md.strip() else md
+    joined = _join_pages(ocr_md)
+    if len(missing) == total and len(joined) <= MAX_SINGLE_REPAIR_CHARS:
+        # Whole document scanned and short enough for one call: cheapest option, and it
+        # gives the model the entire document as context.
+        return reformat_ocr_markdown(joined) if joined.strip() else joined
+
+    # Mixed document, or one long enough that a single call would risk truncation.
+    # Repair page by page, concurrently, and reassemble in page order.
+    pages_md.update(_repair_pages_concurrently(ocr_md))
     return _join_pages(pages_md)
 
 

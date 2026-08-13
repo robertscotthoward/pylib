@@ -36,15 +36,20 @@ all:
       class: openai_compatible
       provider: deepinfra
       base_url: https://api.deepinfra.com/v1/openai
-      model: Qwen/Qwen3.6-35B-A3B
+      model: Qwen/Qwen2.5-VL-32B-Instruct
       api_key_env: DEEPINFRA_TOKEN
-      # Qwen3.6 is a reasoning model — hidden "thinking" tokens count against max_tokens
-      # and can vary a lot per document, occasionally leaving too little budget for the
-      # visible answer. Kept generous to avoid silent truncation on messy OCR input.
-      max_tokens: 32768
-      # Reasoning models can take a while on larger/multi-page documents; the
-      # OpenAICompatibleModelStack default (120s) is too tight for that.
-      timeout: 300
+      # An instruct model, not a reasoning one: it emits no hidden "thinking" tokens, so
+      # max_tokens only has to cover the visible answer. Reformatted output is roughly the
+      # length of the OCR input, and this ceiling costs nothing when unused -- it is a cap,
+      # not a reservation -- so it stays generous to protect multi-page scans from silent
+      # truncation. (The previous reasoning model spent this budget thinking and timed out.)
+      max_tokens: 16384
+      # Measured unloaded: a sparse purchase-order page repairs in ~21s, a dense legal
+      # page (5k characters) in ~41s. Latency climbs further when several repairs are in
+      # flight, so this leaves headroom above the slow case; 90s was too tight and turned
+      # every dense page into a timeout. Concurrency is capped separately by
+      # PYLIB_LLM_CONCURRENCY (see fileconvert.LLM_CONCURRENCY) to stop that climb.
+      timeout: 240
 
 
 
