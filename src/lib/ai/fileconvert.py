@@ -126,15 +126,16 @@ def get_text(filepath):
     try:
         if not os.path.exists(filepath):
             return None
-        if filepath.endswith(".pdf"):
+        extension = os.path.splitext(filepath)[1].lower()
+        if extension == ".pdf":
             return pdf_to_text(filepath)
-        if filepath.endswith(".docx"):
+        if extension == ".docx":
             return docx_to_text(filepath)
-        if filepath.endswith(".rtf"):
+        if extension == ".rtf":
             return rtf_to_text(filepath)
-        if filepath.endswith(".rdf"):
+        if extension == ".rdf":
             return rdf_to_text(filepath)
-        if filepath.endswith(".epub"):
+        if extension == ".epub":
             return epub_to_text(filepath)
         return readText(filepath)
     except Exception as e:
@@ -154,18 +155,31 @@ def get_markdown(filepath, repair_ocr: bool = True):
     try:
         if not os.path.exists(filepath):
             return None
-        if filepath.endswith(".pdf"):
+        # Matched on the lowercased extension: a folder copied from another machine is
+        # full of .PDF and .DOC, and endswith('.pdf') silently sent those to readText.
+        extension = os.path.splitext(filepath)[1].lower()
+        if extension == ".pdf":
             return pdf_bytes_to_markdown(readBytes(filepath), repair_ocr=repair_ocr)
-        if filepath.endswith(".docx"):
+        if extension == ".docx":
             return docx_bytes_to_markdown(readBytes(filepath))
-        if filepath.endswith(".rtf"):
+        if extension == ".rtf":
             return rtf_to_text(filepath)
-        if filepath.endswith(".rdf"):
+        if extension == ".rdf":
             return rdf_to_text(filepath)
-        if filepath.endswith(".epub"):
+        if extension == ".epub":
             return epub_to_markdown(filepath)
-        if filepath.endswith(".xlsx"):
+        if extension == ".xlsx":
             return xlsx_bytes_to_markdown(readBytes(filepath))
+        if extension == ".xls":
+            return xls_bytes_to_markdown(readBytes(filepath))
+        if extension == ".pptx":
+            return pptx_bytes_to_markdown(readBytes(filepath))
+        if extension == ".ppt":
+            return ppt_bytes_to_markdown(readBytes(filepath))
+        if extension in IMAGE_EXTENSIONS:
+            return image_to_markdown(filepath)
+        if extension in AUDIO_EXTENSIONS:
+            return audio_to_markdown(filepath)
         return readText(filepath)
     except Exception as e:
         print(f"Error getting text from {filepath}: {e}")
@@ -265,6 +279,124 @@ def _locate_and_set_tessdata():
         tessdata_path = candidates[0] if candidates else None
     if tessdata_path and os.path.exists(tessdata_path):
         os.environ['TESSDATA_PREFIX'] = tessdata_path
+
+
+AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga', '.opus', '.aac', '.wma', '.aiff'}
+
+# Whisper endpoints reject oversized uploads. Splitting long recordings needs ffmpeg, so
+# for now an over-limit file is reported rather than silently half-transcribed.
+AUDIO_MAX_MB = 25
+
+
+def audio_to_markdown(filepath) -> str | None:
+    """Transcribe an audio file to markdown with a speech-to-text model.
+
+    Configured under config.yaml 'all/audio_transcribe'. Returns None when the feature is
+    off, unconfigured, or the file is too large for the endpoint.
+    """
+    try:
+        from lib.configurations import get_config_credentials_environment
+        from lib.ai.modelstack import ModelStack
+
+        config_path = _find_pylib_file('config.yaml')
+        credentials_path = _find_pylib_file('credentials.yaml')
+        config, _, _ = get_config_credentials_environment(config_path or 'config.yaml', credentials_path)
+        settings = config.get('audio_transcribe') or {}
+        if not settings.get('enabled', True) or not settings.get('model'):
+            return None
+
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        limit = settings.get('max_mb', AUDIO_MAX_MB)
+        if size_mb > limit:
+            print(f"[WARN] {os.path.basename(filepath)} is {size_mb:.0f} MB, over the {limit} MB "
+                  f"transcription limit; skipping. Split it or raise 'max_mb'.")
+            return None
+
+        model_config = settings['model']
+        modelstack = ModelStack.from_config(model_config)
+        with _llm_semaphore:
+            text = modelstack.transcribe(
+                readBytes(filepath),
+                filename=os.path.basename(filepath),
+                language=settings.get('language'),
+            )
+        if not text or not text.strip():
+            return None
+        return f"# {os.path.basename(filepath)}\n\n{text.strip()}\n"
+    except Exception as e:
+        print(f"[WARN] Transcription failed for {os.path.basename(filepath)}: {e}")
+        return None
+
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tif', '.tiff', '.webp'}
+
+_IMAGE_MIME = {
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+    '.gif': 'image/gif', '.bmp': 'image/bmp', '.tif': 'image/tiff',
+    '.tiff': 'image/tiff', '.webp': 'image/webp',
+}
+
+# Longest edge, in pixels, an image is scaled to before upload. Vision models downsample
+# anyway, and a modern camera JPEG inflates by a third as base64, so sending the original
+# costs upload time and tokens without improving what the model can see.
+IMAGE_MAX_EDGE = 1568
+
+
+def _prepare_image(filepath) -> tuple:
+    """Return (bytes, mime type) for upload, downscaling anything oversized to JPEG."""
+    extension = os.path.splitext(filepath)[1].lower()
+    mime = _IMAGE_MIME.get(extension, 'image/jpeg')
+    raw = readBytes(filepath)
+
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as img:
+            if max(img.size) <= IMAGE_MAX_EDGE and extension in ('.jpg', '.jpeg', '.png'):
+                return raw, mime
+            img = img.convert('RGB')
+            img.thumbnail((IMAGE_MAX_EDGE, IMAGE_MAX_EDGE))
+            buffer = io.BytesIO()
+            img.save(buffer, format='JPEG', quality=85)
+            return buffer.getvalue(), 'image/jpeg'
+    except Exception as e:
+        # An unreadable or exotic image still gets one attempt as-is.
+        print(f"[WARN] Could not resize {os.path.basename(filepath)} ({e}); sending original.")
+        return raw, mime
+
+
+def image_to_markdown(filepath) -> str | None:
+    """Describe an image with a vision model and return it as markdown.
+
+    Configured under config.yaml 'all/image_describe'. Returns None when the feature is
+    disabled or unconfigured, so callers can skip the file rather than record a failure.
+    """
+    try:
+        from lib.configurations import get_config_credentials_environment
+        from lib.ai.modelstack import ModelStack
+
+        config_path = _find_pylib_file('config.yaml')
+        credentials_path = _find_pylib_file('credentials.yaml')
+        config, _, _ = get_config_credentials_environment(config_path or 'config.yaml', credentials_path)
+        settings = config.get('image_describe') or {}
+        if not settings.get('enabled', True) or not settings.get('model'):
+            return None
+
+        model_config = settings['model']
+        prompt = settings.get('prompt', 'Describe this image in detail.')
+        image_bytes, mime = _prepare_image(filepath)
+
+        modelstack = ModelStack.from_config(model_config)
+        with _llm_semaphore:
+            description = modelstack.query_image(
+                prompt, image_bytes, mime_type=mime,
+                max_tokens=model_config.get('max_tokens', 2048),
+            )
+        if not description or not description.strip():
+            return None
+        return f"# {os.path.basename(filepath)}\n\n{description.strip()}\n"
+    except Exception as e:
+        print(f"[WARN] Image description failed for {os.path.basename(filepath)}: {e}")
+        return None
 
 
 def pdf_needs_ocr(filepath) -> bool:

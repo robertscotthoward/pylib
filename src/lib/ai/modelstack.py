@@ -69,6 +69,14 @@ class ModelStack:
     def query(self, prompt, max_tokens=1024):
         raise NotImplementedError("Subclasses must implement this method.")
 
+    def query_image(self, prompt, image_bytes, mime_type='image/jpeg', max_tokens=1024):
+        """Describe or read an image. Only vision-capable backends implement this."""
+        raise NotImplementedError(f"{type(self).__name__} does not support image input")
+
+    def transcribe(self, audio_bytes, filename='audio.mp3', language=None, prompt=None):
+        """Transcribe audio. Only backends with a speech endpoint implement this."""
+        raise NotImplementedError(f"{type(self).__name__} does not support audio input")
+
     def query_yes_no(self, prompt, max_tokens=1024):
         # Note: When debugging, this method may timeout in the debugger's expression evaluator
         # due to network calls to LLM APIs. Set PYDEVD_WARN_EVALUATION_TIMEOUT=10 or higher
@@ -332,7 +340,12 @@ class OpenAICompatibleModelStack(ModelStack):
     def __init__(self, config):
         super().__init__(config)
 
-    def query(self, prompt, max_tokens=1024):
+    def _request(self, content, max_tokens):
+        """POST one user message and return the assistant's text.
+
+        `content` is either a plain string or the OpenAI multi-part list used for
+        vision requests, so text and image calls share the same auth and error handling.
+        """
         base_url = self.config['base_url'].rstrip('/')
         model = self.config['model']
         api_key = self.config.get('api_key')
@@ -347,7 +360,7 @@ class OpenAICompatibleModelStack(ModelStack):
 
         payload = {
             'model': model,
-            'messages': [{'role': 'user', 'content': prompt}],
+            'messages': [{'role': 'user', 'content': content}],
             'max_tokens': max_tokens,
         }
         if 'temperature' in self.config:
@@ -359,6 +372,57 @@ class OpenAICompatibleModelStack(ModelStack):
         if r.status_code != 200:
             raise Exception(f"Request failed with status code {r.status_code}: {r.text}")
         return r.json()['choices'][0]['message']['content']
+
+    def query(self, prompt, max_tokens=1024):
+        return self._request(prompt, max_tokens)
+
+    def transcribe(self, audio_bytes, filename='audio.mp3', language=None, prompt=None):
+        """Transcribe audio via an OpenAI-compatible /audio/transcriptions endpoint.
+
+        A different endpoint and encoding from chat: the file goes as multipart form data
+        rather than JSON, so this cannot reuse _request.
+        """
+        base_url = self.config['base_url'].rstrip('/')
+        api_key = self.config.get('api_key')
+        if not api_key and self.config.get('api_key_env'):
+            api_key = os.environ.get(self.config['api_key_env'])
+
+        headers = {}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+
+        data = {'model': self.config['model']}
+        if language:
+            data['language'] = language
+        if prompt:
+            data['prompt'] = prompt
+
+        r = requests.post(
+            f'{base_url}/audio/transcriptions',
+            headers=headers,
+            files={'file': (filename, audio_bytes)},
+            data=data,
+            timeout=self.config.get('timeout', 600),
+        )
+        if r.status_code != 200:
+            raise Exception(f"Transcription failed with status code {r.status_code}: {r.text}")
+        payload = r.json()
+        return payload.get('text', '') if isinstance(payload, dict) else str(payload)
+
+    def query_image(self, prompt, image_bytes, mime_type='image/jpeg', max_tokens=1024):
+        """Send an image plus a text prompt to a vision model.
+
+        The image travels inline as a base64 data URI, which every OpenAI-compatible
+        vision endpoint accepts and which avoids needing anywhere to host the file.
+        """
+        import base64
+
+        encoded = base64.b64encode(image_bytes).decode('ascii')
+        content = [
+            {'type': 'text', 'text': prompt},
+            {'type': 'image_url', 'image_url': {'url': f'data:{mime_type};base64,{encoded}'}},
+        ]
+        return self._request(content, max_tokens)
 
 
 class TEMPLATE_ModelStack(ModelStack):

@@ -21,6 +21,45 @@ all:
 
   wordconv_path: 'C:\Program Files\Microsoft Office\root\Office16\Wordconv.exe'
 
+  # Transcribes audio files (.mp3, .wav, .m4a, ...) to markdown with a speech model.
+  audio_transcribe:
+    enabled: true
+    # Whisper auto-detects language when this is unset; set e.g. 'en' to pin it.
+    language:
+    # Files above this are skipped rather than half-transcribed: splitting long
+    # recordings needs ffmpeg, which this does not shell out to.
+    max_mb: 25
+    model:
+      class: openai_compatible
+      provider: deepinfra
+      base_url: https://api.deepinfra.com/v1/openai
+      model: openai/whisper-large-v3
+      api_key_env: DEEPINFRA_TOKEN
+      # A long recording takes a while to upload and transcribe.
+      timeout: 600
+
+  # Describes image files (.jpg, .png, ...) with a vision model so photographs and
+  # photographed documents get a searchable .md sibling like every other file type.
+  # Set enabled: false to leave images unconverted.
+  image_describe:
+    enabled: true
+    prompt: >-
+      Describe this image for a searchable archive. State what it shows: people and what
+      they are doing, the setting, and any objects that identify the occasion. Transcribe
+      any visible text, signage, slides, whiteboards, or documents verbatim. If the image
+      is primarily a document, transcribe it in full and structure it as markdown. Do not
+      guess at names or dates that are not visible. Output only the description.
+    model:
+      class: openai_compatible
+      provider: deepinfra
+      base_url: https://api.deepinfra.com/v1/openai
+      model: Qwen/Qwen2.5-VL-32B-Instruct
+      api_key_env: DEEPINFRA_TOKEN
+      # A description is short; a full-page document transcription is not, and this has
+      # to cover the worst case.
+      max_tokens: 4096
+      timeout: 240
+
   # Post-processes OCR'd (Tesseract) markdown through an LLM to clean up formatting.
   # Swap providers by editing 'model' below — 'class: openai_compatible' works with
   # any OpenAI-style /chat/completions API (DeepInfra, OpenRouter, Together, a local

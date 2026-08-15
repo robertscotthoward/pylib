@@ -1,6 +1,7 @@
 from pathlib import Path
 import fnmatch
 import os
+import shutil
 from typing import Optional
 import typer
 
@@ -84,7 +85,22 @@ def main():
     """pylib CLI tools."""
 
 
-CONVERTIBLE_EXTENSIONS = {".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub", ".xlsx"}
+CONVERTIBLE_EXTENSIONS = {
+    ".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub",
+    ".xlsx", ".xls", ".pptx", ".ppt",
+}
+
+# Still images get a vision-model description; see fileconvert.image_to_markdown.
+# Video is deliberately absent -- describing it needs frame sampling, not one still.
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"}
+
+# Audio is transcribed by a speech model; see fileconvert.audio_to_markdown.
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".oga", ".opus", ".aac", ".wma", ".aiff"}
+
+# Both are network calls per file, so they are queued to the worker pool rather than
+# converted inline.
+REMOTE_EXTENSIONS = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS
+CONVERTIBLE_EXTENSIONS |= REMOTE_EXTENSIONS
 
 # Text formats the clean command will touch when walking a folder. Binary formats are
 # excluded because reading them as text and writing the result back would destroy them.
@@ -94,6 +110,81 @@ CLEANABLE_EXTENSIONS = {
     ".csv", ".tsv", ".json", ".yaml", ".yml", ".xml", ".html", ".htm",
     ".ini", ".cfg", ".conf",
 }
+
+
+_PARTIAL_HASH_BYTES = 65536
+
+
+def _build_dedupe_index(folder: Path):
+    """Index convertible files by (size, extension, hash of first 64KB).
+
+    Two thirds of a large corpus share a size with nothing, and those cannot have a
+    duplicate, so only files whose size collides are ever opened. The partial hash is a
+    filter, not proof: a match is confirmed byte-for-byte before anything is reused.
+
+    Returns (key by path, paths by key, number of files hashed). Every convertible file
+    is indexed regardless of --filter, so a donor can come from anywhere in the tree.
+    """
+    import hashlib
+    from collections import defaultdict
+
+    by_size = defaultdict(list)
+    for path in folder.rglob("*"):
+        if not path.is_file() or path.name.startswith("._"):
+            continue
+        extension = path.suffix.lower()
+        if extension not in CONVERTIBLE_EXTENSIONS:
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size:
+            by_size[(size, extension)].append(path)
+
+    key_by_path: dict = {}
+    paths_by_key: dict = defaultdict(list)
+    hashed = 0
+    for (size, extension), paths in by_size.items():
+        if len(paths) < 2:
+            continue
+        for path in paths:
+            try:
+                with open(path, "rb") as handle:
+                    head = handle.read(_PARTIAL_HASH_BYTES)
+            except OSError:
+                continue
+            key = (size, extension, hashlib.sha256(head).hexdigest())
+            key_by_path[path] = key
+            paths_by_key[key].append(path)
+            hashed += 1
+    return key_by_path, paths_by_key, hashed
+
+
+def _find_duplicate_md(file_path: Path, key_by_path: dict, paths_by_key: dict):
+    """Return an existing .md belonging to a byte-identical file, or None.
+
+    The candidate is compared in full with filecmp before its .md is offered up.
+    Attaching one document's text to a different document would be a worse outcome
+    than converting the same bytes twice.
+    """
+    import filecmp
+
+    key = key_by_path.get(file_path)
+    if key is None:
+        return None
+    for other in paths_by_key.get(key, ()):
+        if other == file_path:
+            continue
+        other_md = other.with_name(other.name + ".md")
+        try:
+            if not other_md.is_file() or other_md.stat().st_size == 0:
+                continue
+            if filecmp.cmp(str(file_path), str(other), shallow=False):
+                return other_md
+        except OSError:
+            continue
+    return None
 
 
 def _write_error_marker(md_path: Path, source_path: Path):
@@ -259,8 +350,31 @@ def convert(
              "(YYYY-MM-DD or YYYY-MM-DDTHH:MM). Use it to redo scans from before a model "
              "change without touching newer, already-good output.",
     ),
+    dedupe: bool = typer.Option(
+        False,
+        "--dedupe",
+        help="Reuse an existing .md when a byte-identical copy of the file has already "
+             "been converted, instead of converting the same bytes twice. Costs one "
+             "indexing pass up front.",
+    ),
+    fix_names_first: bool = typer.Option(
+        False,
+        "--fix-names",
+        help="Before converting, migrate old-style 'XXX.md' output to the 'XXX.EXT.md' "
+             "convention. Runs first so the migrated files are then seen as up to date.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Report what would happen without renaming, deleting, or writing anything.",
+    ),
 ):
     """Convert all supported files in FOLDER to markdown.
+
+    XXX.ext converts to XXX.ext.md, not XXX.md, so a folder holding both report.doc and
+    report.docx gets two distinct outputs instead of one clobbering the other. Use
+    `fix-names` to migrate a corpus that already has the old XXX.md outputs.
 
     A file is converted when its .md sibling is missing or older than the file itself,
     so edited sources are re-converted and up-to-date ones are skipped.
@@ -277,10 +391,19 @@ def convert(
     from concurrent.futures import ThreadPoolExecutor
     from lib.ai.fileconvert import (
         get_markdown, convert_doc_to_docx, needs_conversion, pdf_needs_ocr,
-        reformat_ocr_markdown,
+        reformat_ocr_markdown, image_to_markdown, audio_to_markdown,
     )
 
     patterns: list[str] = [p.strip() for p in filter.split("|") if p.strip()] if filter else []
+
+    # Renames a dry run only pretended to make, so the conversion preview below can
+    # still judge staleness against where each .md would have ended up.
+    planned_renames: dict = {}
+    if fix_names_first:
+        # Runs before the walk so migrated files are already correctly named, and the
+        # conversion pass then sees them as up to date instead of redoing the work.
+        planned_renames = _fix_names(folder, dry_run)
+        typer.echo("")
 
     if ocr_processes:
         # fileconvert reads this per call, so setting it here reaches the OCR pool.
@@ -295,6 +418,15 @@ def convert(
             typer.echo(f"Invalid --older-than '{older_than}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM.", err=True)
             raise typer.Exit(1)
 
+    key_by_path: dict = {}
+    paths_by_key: dict = {}
+    if dedupe:
+        typer.echo("Indexing duplicates...")
+        key_by_path, paths_by_key, hashed = _build_dedupe_index(folder)
+        typer.echo(
+            f"Indexed {hashed} files sharing a size, in {len(paths_by_key)} groups.\n"
+        )
+
     converted = 0
     updated = 0
     retried = 0
@@ -302,6 +434,7 @@ def convert(
     empty_sources = 0
     errors = 0
     repaired = 0
+    deduped = 0
 
     # Scanned PDFs whose LLM repair is still in flight: (future, raw markdown, paths, flags).
     pending: list[tuple] = []
@@ -333,11 +466,18 @@ def convert(
                 # Keep the raw OCR rather than losing the page to a failed network call.
                 typer.echo(f"  Warning: OCR repair failed for {source_path.name}, keeping raw OCR: {e}", err=True)
                 text = raw
+            text = text or raw
+            if not (text and text.strip()):
+                # Nothing came back and there is no raw OCR to fall back on.
+                typer.echo(f"  Warning: no content extracted from {source_path.name}", err=True)
+                _write_error_marker(md_path, source_path)
+                errors += 1
+                continue
             try:
-                md_path.write_text(text or raw, encoding="utf-8")
+                md_path.write_text(text, encoding="utf-8")
                 record_success(was_error_marker, was_rebuild)
                 repaired += 1
-                typer.echo(f"  OCR done: {source_path.name}")
+                typer.echo(f"  Done: {source_path.name}")
             except Exception as e:
                 typer.echo(f"  Error writing {md_path.name}: {e}", err=True)
                 errors += 1
@@ -363,9 +503,12 @@ def convert(
                 empty_sources += 1
                 continue
 
-            md_path = file_path.with_suffix(".md")
+            md_path = file_path.with_name(file_path.name + ".md")
+            # In a dry run the rename has not happened, so judge staleness against the file
+            # the rename would have moved. Outside a dry run this is always md_path itself.
+            check_md = planned_renames.get(md_path, md_path)
             # An empty .md is the marker a failed conversion leaves behind, never a real result.
-            is_error_marker = md_path.is_file() and md_path.stat().st_size == 0
+            is_error_marker = check_md.is_file() and check_md.stat().st_size == 0
             is_pdf = file_path.suffix.lower() == ".pdf"
             scanned = None  # resolved lazily; opening every PDF twice is wasted work
 
@@ -374,24 +517,41 @@ def convert(
             elif retry_errors and is_error_marker:
                 stale = True
             else:
-                stale = needs_conversion(str(file_path), str(md_path))
+                stale = needs_conversion(str(file_path), str(check_md))
                 if not stale and redo_ocr and is_pdf:
                     # Only pay for opening the PDF once the date filter has passed.
-                    fresh_enough = cutoff is not None and md_path.exists() and md_path.stat().st_mtime >= cutoff
+                    fresh_enough = cutoff is not None and check_md.exists() and check_md.stat().st_mtime >= cutoff
                     if not fresh_enough:
                         scanned = pdf_needs_ocr(str(file_path))
                         stale = scanned
             if not stale:
                 skipped += 1
                 continue
-            rebuild = md_path.exists()
+            rebuild = check_md.exists()
 
             if is_error_marker:
-                action = "Retrying"
+                action, intent = "Retrying", "Would retry"
             elif rebuild:
-                action = "Re-converting"
+                action, intent = "Re-converting", "Would re-convert"
             else:
-                action = "Converting"
+                action, intent = "Converting", "Would convert"
+
+            # Reuse the output of an identical file before doing any conversion work.
+            donor_md = _find_duplicate_md(file_path, key_by_path, paths_by_key) if dedupe else None
+            if donor_md is not None:
+                if dry_run:
+                    typer.echo(f"Would copy from duplicate: {file_path.name} <- {donor_md.name}")
+                else:
+                    shutil.copyfile(donor_md, md_path)
+                    typer.echo(f"Copied from duplicate: {file_path.name} <- {donor_md.name}")
+                deduped += 1
+                continue
+
+            if dry_run:
+                typer.echo(f"{intent}: {file_path}")
+                record_success(is_error_marker, rebuild)
+                continue
+
             typer.echo(f"{action}: {file_path}")
             try:
                 convert_path = file_path
@@ -405,6 +565,18 @@ def convert(
                         errors += 1
                         continue
                     convert_path = docx_path
+
+                remote_worker = None
+                if file_path.suffix.lower() in IMAGE_EXTENSIONS:
+                    remote_worker = image_to_markdown
+                elif file_path.suffix.lower() in AUDIO_EXTENSIONS:
+                    remote_worker = audio_to_markdown
+                if remote_worker is not None:
+                    # One network call per file, so queue it and keep walking rather than
+                    # blocking the main thread on every photo or recording in the tree.
+                    future = pool.submit(remote_worker, str(convert_path))
+                    pending.append((future, "", md_path, file_path, is_error_marker, rebuild))
+                    continue
 
                 if scanned is None and is_pdf:
                     scanned = pdf_needs_ocr(str(convert_path))
@@ -441,10 +613,11 @@ def convert(
         pool.shutdown(wait=True)
 
     summary = [
-        f"{converted} converted",
+        f"{converted} " + ("would be converted" if dry_run else "converted"),
         f"{updated} re-converted (source newer than .md)",
         f"{retried} recovered (previous error)",
         f"{repaired} via OCR",
+        f"{deduped} copied from a duplicate",
         f"{skipped} skipped (.md up to date)",
         f"{empty_sources} skipped (empty source file)",
         f"{errors} errors",
@@ -452,6 +625,91 @@ def convert(
     typer.echo("\nDone: " + ", ".join(summary))
     if errors and not retry_errors:
         typer.echo("Re-run with --retry-errors to retry only the files that failed.")
+
+
+@app.command("fix-names")
+def fix_names(
+    folder: Path = typer.Argument(
+        ...,
+        help="Folder to recursively scan for old-style same-stem .md files.",
+        exists=True,
+        file_okay=False,
+        resolve_path=True,
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Report what would be renamed/deleted without changing anything.",
+    ),
+):
+    """Migrate old-style 'XXX.md' conversion output to the collision-proof 'XXX.EXT.md'
+    convention that `convert` now writes.
+
+    For every XXX.md found, looks at every other file in the same folder whose stem
+    (case-insensitive) is also XXX:
+
+    - Exactly one such file XXX.EXT: unambiguous, XXX.md is renamed to XXX.EXT.md.
+    - Two or more such files (e.g. report.doc and report.docx both present): ambiguous,
+      since XXX.md could have come from any of them. It is deleted rather than guessed
+      at; the source files are untouched, so re-running `convert` regenerates correct,
+      distinctly-named output for each one.
+    - None: XXX.md isn't a conversion output (e.g. a hand-written note) and is left alone.
+    """
+    _fix_names(folder, dry_run)
+
+
+def _fix_names(folder: Path, dry_run: bool) -> dict:
+    """Rename old-style XXX.md outputs to XXX.EXT.md. Shared by the `fix-names` command
+    and `convert --fix-names`, so both behave identically.
+
+    Returns {planned new path: existing old path} for a dry run, empty otherwise. It lets
+    `convert --fix-names --dry-run` report what it would do *after* the rename, instead of
+    claiming it would re-convert every file whose .md has not moved yet.
+    """
+    planned: dict = {}
+    renamed = 0
+    deleted = 0
+    left_alone = 0
+
+    for md_path in sorted(folder.rglob("*.md")):
+        stem_lower = md_path.stem.lower()
+        siblings = [
+            p for p in md_path.parent.iterdir()
+            if p.is_file() and p != md_path and p.stem.lower() == stem_lower
+        ]
+
+        if not siblings:
+            left_alone += 1
+            continue
+
+        if len(siblings) == 1:
+            new_path = siblings[0].with_name(siblings[0].name + ".md")
+            if new_path.exists():
+                typer.echo(f"  Skipping (target already exists): {md_path} -> {new_path.name}", err=True)
+                left_alone += 1
+                continue
+            if dry_run:
+                typer.echo(f"Would rename: {md_path} -> {new_path.name}")
+                planned[new_path] = md_path
+            else:
+                md_path.rename(new_path)
+                typer.echo(f"Renamed: {md_path} -> {new_path.name}")
+            renamed += 1
+            continue
+
+        names = ", ".join(p.name for p in siblings)
+        if dry_run:
+            typer.echo(f"Would delete (ambiguous, matches {names}): {md_path}")
+        else:
+            md_path.unlink()
+            typer.echo(f"Deleted (ambiguous, matches {names}): {md_path}")
+        deleted += 1
+
+    verb = "would be renamed" if dry_run else "renamed"
+    verb2 = "would be deleted" if dry_run else "deleted"
+    typer.echo(f"\nNames: {renamed} {verb}, {deleted} {verb2} (ambiguous), {left_alone} left alone")
+    return planned
 
 
 def _build_modelstack(model_class: str, model: str, host: str, region: str):

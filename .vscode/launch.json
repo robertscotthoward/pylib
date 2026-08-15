@@ -20,6 +20,20 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "GDrive",
+            "type": "debugpy",
+            "request": "launch",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "module": "main",
+            "args": [
+                "convert",
+                "C:\\Rob\\GDrive"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Test",
             "type": "debugpy",
             "request": "launch",
