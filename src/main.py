@@ -92,14 +92,20 @@ CONVERTIBLE_EXTENSIONS = {
 
 # Still images get a vision-model description; see fileconvert.image_to_markdown.
 # Video is deliberately absent -- describing it needs frame sampling, not one still.
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"}
+# Camera RAW is decoded to JPEG before upload; see fileconvert._raw_to_jpeg_bytes.
+RAW_EXTENSIONS = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".srw"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"} | RAW_EXTENSIONS
 
 # Audio is transcribed by a speech model; see fileconvert.audio_to_markdown.
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".oga", ".opus", ".aac", ".wma", ".aiff"}
 
-# Both are network calls per file, so they are queued to the worker pool rather than
-# converted inline.
-REMOTE_EXTENSIONS = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS
+# HTML is stripped of JS/CSS/attributes with BeautifulSoup, then rewritten to markdown
+# by an LLM; see fileconvert.html_to_markdown.
+HTML_EXTENSIONS = {".html", ".htm"}
+
+# All three are network calls per file, so they are queued to the worker pool rather
+# than converted inline.
+REMOTE_EXTENSIONS = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | HTML_EXTENSIONS
 CONVERTIBLE_EXTENSIONS |= REMOTE_EXTENSIONS
 
 # Text formats the clean command will touch when walking a folder. Binary formats are
@@ -193,21 +199,45 @@ def _write_error_marker(md_path: Path, source_path: Path):
     treated as stale (and re-attempted) until the source itself changes.
     """
     md_path.write_bytes(b"")
-    st = source_path.stat()
-    os.utime(md_path, (st.st_atime, st.st_mtime))
+    try:
+        st = source_path.stat()
+        os.utime(md_path, (st.st_atime, st.st_mtime))
+    except OSError:
+        # The source may be exactly what we could not read. The marker still stands;
+        # it just carries the current time instead of the source's.
+        pass
+
+
+def _matches_one_pattern(lower_name: str, pattern: str) -> bool:
+    """Match one pattern. A bare extension ('.pdf') is a suffix test, anything else a glob."""
+    pattern = pattern.lower()
+    if pattern.startswith(".") and "*" not in pattern and "?" not in pattern:
+        return lower_name.endswith(pattern)
+    return fnmatch.fnmatch(lower_name, pattern)
 
 
 def _matches_patterns(name: str, patterns: list[str]) -> bool:
-    """True if name matches any pattern; bare extensions (e.g. '.pdf') act as suffix filters."""
+    """True if name passes the filter. A '!' prefix makes a segment exclude instead.
+
+    Positives choose what to consider, negatives remove from it, and an exclusion always
+    wins. With only negatives there is nothing to narrow, so everything else is included
+    -- which is what makes '!.pdf' read as "all but PDFs".
+
+        .pdf              only PDFs
+        !.pdf             everything except PDFs
+        .pdf|.docx        PDFs and Word files
+        !.pdf|!.jpg       everything except PDFs and JPEGs
+        .pdf|!draft*      PDFs, except ones whose name starts with draft
+    """
     lower = name.lower()
-    for pat in patterns:
-        if pat.startswith(".") and "*" not in pat and "?" not in pat:
-            if lower.endswith(pat.lower()):
-                return True
-        else:
-            if fnmatch.fnmatch(lower, pat.lower()):
-                return True
-    return False
+    positives = [p for p in patterns if not p.startswith("!")]
+    negatives = [p[1:] for p in patterns if p.startswith("!") and len(p) > 1]
+
+    if any(_matches_one_pattern(lower, pattern) for pattern in negatives):
+        return False
+    if not positives:
+        return True
+    return any(_matches_one_pattern(lower, pattern) for pattern in positives)
 
 
 @app.command()
@@ -223,7 +253,9 @@ def clean(
         "--filter",
         "-f",
         help="Pipe-delimited filename patterns to process (e.g. '.md|notes*.txt'). "
-             "Folder mode only; when omitted, all supported text types are processed.",
+             "Prefix a segment with '!' to exclude it instead ('!.json' means everything "
+             "except JSON). Folder mode only; when omitted, all supported text types "
+             "are processed.",
     ),
     keep_nonsense: bool = typer.Option(
         False,
@@ -309,7 +341,9 @@ def convert(
         "--filter",
         "-f",
         help="Pipe-delimited filename patterns to process (e.g. '.pdf|report*.docx'). "
-             "When omitted, all supported file types are processed.",
+             "Prefix a segment with '!' to exclude it instead ('!.pdf' means everything "
+             "except PDFs). Exclusions always win. When omitted, all supported file types "
+             "are processed.",
     ),
     force: bool = typer.Option(
         False,
@@ -391,7 +425,7 @@ def convert(
     from concurrent.futures import ThreadPoolExecutor
     from lib.ai.fileconvert import (
         get_markdown, convert_doc_to_docx, needs_conversion, pdf_needs_ocr,
-        reformat_ocr_markdown, image_to_markdown, audio_to_markdown,
+        reformat_ocr_markdown, image_to_markdown, audio_to_markdown, html_to_markdown,
     )
 
     patterns: list[str] = [p.strip() for p in filter.split("|") if p.strip()] if filter else []
@@ -433,10 +467,25 @@ def convert(
     skipped = 0
     empty_sources = 0
     errors = 0
-    repaired = 0
+    ocr_repaired = 0
+    images_described = 0
+    audio_transcribed = 0
+    html_converted = 0
     deduped = 0
 
-    # Scanned PDFs whose LLM repair is still in flight: (future, raw markdown, paths, flags).
+    # Label and counter for each kind of job that runs on the pool, keyed the same way
+    # as the 'kind' tag on each pending job below.
+    _REMOTE_KIND_LABELS = {
+        "ocr": "OCR repair",
+        "image": "image description",
+        "audio": "audio transcription",
+        "html": "HTML conversion",
+    }
+
+    # Jobs whose LLM/model call is still in flight on the pool:
+    # (future, raw fallback text, md_path, source_path, was_error_marker, was_rebuild, kind).
+    # 'raw' is only non-empty for OCR jobs, which can fall back to the un-repaired text;
+    # image/audio/HTML jobs have no meaningful fallback if the model call fails.
     pending: list[tuple] = []
 
     def record_success(is_error_marker: bool, rebuild: bool):
@@ -449,26 +498,27 @@ def convert(
             converted += 1
 
     def flush_pending(block: bool):
-        """Write finished OCR repairs to disk.
+        """Write finished pool jobs (OCR repair, image, audio, HTML) to disk.
 
         Called after every file with block=False so each document lands as soon as its
-        repair returns. That keeps progress durable: interrupt the run and everything
+        job returns. That keeps progress durable: interrupt the run and everything
         already written is complete, so re-running skips it instead of redoing it.
         """
-        nonlocal repaired, errors
+        nonlocal errors, ocr_repaired, images_described, audio_transcribed, html_converted
         ready = list(pending) if block else [job for job in pending if job[0].done()]
         for job in ready:
-            future, raw, md_path, source_path, was_error_marker, was_rebuild = job
+            future, raw, md_path, source_path, was_error_marker, was_rebuild, kind = job
             pending.remove(job)
+            label = _REMOTE_KIND_LABELS[kind]
             try:
                 text = future.result()
             except Exception as e:
-                # Keep the raw OCR rather than losing the page to a failed network call.
-                typer.echo(f"  Warning: OCR repair failed for {source_path.name}, keeping raw OCR: {e}", err=True)
+                detail = ", keeping raw OCR" if raw else ""
+                typer.echo(f"  Warning: {label} failed for {source_path.name}{detail}: {e}", err=True)
                 text = raw
             text = text or raw
             if not (text and text.strip()):
-                # Nothing came back and there is no raw OCR to fall back on.
+                # Nothing came back and there is no raw fallback to fall back on.
                 typer.echo(f"  Warning: no content extracted from {source_path.name}", err=True)
                 _write_error_marker(md_path, source_path)
                 errors += 1
@@ -476,7 +526,14 @@ def convert(
             try:
                 md_path.write_text(text, encoding="utf-8")
                 record_success(was_error_marker, was_rebuild)
-                repaired += 1
+                if kind == "ocr":
+                    ocr_repaired += 1
+                elif kind == "image":
+                    images_described += 1
+                elif kind == "audio":
+                    audio_transcribed += 1
+                elif kind == "html":
+                    html_converted += 1
                 typer.echo(f"  Done: {source_path.name}")
             except Exception as e:
                 typer.echo(f"  Error writing {md_path.name}: {e}", err=True)
@@ -493,14 +550,35 @@ def convert(
                 continue
             if file_path.suffix.lower() not in CONVERTIBLE_EXTENSIONS:
                 continue
-            # macOS '._name.doc' sidecars carry a document's name but only resource-fork
-            # metadata, so every converter fails on them.
+
+            # Files with a convertible extension that hold no readable document still get
+            # an empty .md, so every convertible source has a sibling and a missing .md
+            # always means "not processed yet" rather than "nothing to process".
+            #   - macOS '._name' sidecars carry a document's name but only resource-fork
+            #     metadata, so no converter can read them.
+            #   - A zero-byte file holds nothing for any parser to read.
+            unreadable_reason = None
             if file_path.name.startswith("._"):
-                continue
-            # A zero-byte source holds no document for any parser to read. Skipping it is
-            # not a failure, so it gets no error marker and does not inflate the error count.
-            if file_path.stat().st_size == 0:
+                unreadable_reason = "macOS resource fork"
+            else:
+                try:
+                    if file_path.stat().st_size == 0:
+                        unreadable_reason = "empty file"
+                except OSError as e:
+                    unreadable_reason = f"unreadable ({e.strerror or e})"
+
+            if unreadable_reason:
+                marker_path = file_path.with_name(file_path.name + ".md")
                 empty_sources += 1
+                if not marker_path.exists():
+                    if dry_run:
+                        typer.echo(f"Would mark unconvertible ({unreadable_reason}): {file_path.name}")
+                    else:
+                        try:
+                            _write_error_marker(marker_path, file_path)
+                        except OSError as e:
+                            typer.echo(f"  Error writing marker for {file_path.name}: {e}", err=True)
+                            errors += 1
                 continue
 
             md_path = file_path.with_name(file_path.name + ".md")
@@ -567,15 +645,18 @@ def convert(
                     convert_path = docx_path
 
                 remote_worker = None
+                remote_kind = None
                 if file_path.suffix.lower() in IMAGE_EXTENSIONS:
-                    remote_worker = image_to_markdown
+                    remote_worker, remote_kind = image_to_markdown, "image"
                 elif file_path.suffix.lower() in AUDIO_EXTENSIONS:
-                    remote_worker = audio_to_markdown
+                    remote_worker, remote_kind = audio_to_markdown, "audio"
+                elif file_path.suffix.lower() in HTML_EXTENSIONS:
+                    remote_worker, remote_kind = html_to_markdown, "html"
                 if remote_worker is not None:
                     # One network call per file, so queue it and keep walking rather than
                     # blocking the main thread on every photo or recording in the tree.
                     future = pool.submit(remote_worker, str(convert_path))
-                    pending.append((future, "", md_path, file_path, is_error_marker, rebuild))
+                    pending.append((future, "", md_path, file_path, is_error_marker, rebuild, remote_kind))
                     continue
 
                 if scanned is None and is_pdf:
@@ -587,7 +668,7 @@ def convert(
                     raw = get_markdown(str(convert_path), repair_ocr=False)
                     if raw and raw.strip():
                         future = pool.submit(reformat_ocr_markdown, raw)
-                        pending.append((future, raw, md_path, file_path, is_error_marker, rebuild))
+                        pending.append((future, raw, md_path, file_path, is_error_marker, rebuild, "ocr"))
                         continue
                     markdown = raw
                 else:
@@ -605,9 +686,9 @@ def convert(
                 _write_error_marker(md_path, file_path)
                 errors += 1
 
-        # Collect whatever OCR repairs are still running after the walk finished.
+        # Collect whatever pool jobs are still running after the walk finished.
         if pending:
-            typer.echo(f"\nCollecting {len(pending)} OCR repair(s) still in flight...")
+            typer.echo(f"\nCollecting {len(pending)} conversion(s) still in flight...")
         flush_pending(block=True)
     finally:
         pool.shutdown(wait=True)
@@ -616,7 +697,10 @@ def convert(
         f"{converted} " + ("would be converted" if dry_run else "converted"),
         f"{updated} re-converted (source newer than .md)",
         f"{retried} recovered (previous error)",
-        f"{repaired} via OCR",
+        f"{ocr_repaired} OCR-repaired",
+        f"{images_described} images described",
+        f"{audio_transcribed} audio transcribed",
+        f"{html_converted} HTML converted",
         f"{deduped} copied from a duplicate",
         f"{skipped} skipped (.md up to date)",
         f"{empty_sources} skipped (empty source file)",

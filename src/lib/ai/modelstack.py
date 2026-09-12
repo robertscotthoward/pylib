@@ -1,5 +1,7 @@
+import glob
+import os
+import threading
 import time
-from tkinter import S
 import boto3
 import requests
 import json
@@ -64,6 +66,8 @@ class ModelStack:
             return BedrockModelStack(model_config)
         if cls == 'openai_compatible':
             return OpenAICompatibleModelStack(model_config)
+        if cls == 'local_whisper':
+            return LocalWhisperModelStack(model_config)
         raise ValueError(f"Unsupported model stack class: {cls}")
     
     def query(self, prompt, max_tokens=1024):
@@ -73,9 +77,17 @@ class ModelStack:
         """Describe or read an image. Only vision-capable backends implement this."""
         raise NotImplementedError(f"{type(self).__name__} does not support image input")
 
-    def transcribe(self, audio_bytes, filename='audio.mp3', language=None, prompt=None):
-        """Transcribe audio. Only backends with a speech endpoint implement this."""
+    def transcribe_file(self, path, language=None):
+        """Transcribe an audio file by path. Only speech backends implement this.
+
+        Takes a path rather than bytes because recordings run to gigabytes, and a local
+        backend can stream one off disk instead of holding it all in memory.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not support audio input")
+
+    def has_upload_limit(self) -> bool:
+        """True when the backend ships the file somewhere and so caps its size."""
+        return True
 
     def query_yes_no(self, prompt, max_tokens=1024):
         # Note: When debugging, this method may timeout in the debugger's expression evaluator
@@ -337,6 +349,16 @@ class OpenAICompatibleModelStack(ModelStack):
     Swap providers by changing 'base_url' / 'model' / 'api_key' in config.yaml —
     no code changes needed.
     """
+
+    # 429 (rate limited / "engine_overloaded") and 5xx are the provider's shared
+    # capacity, not a request we sent wrong, so they're worth retrying after a wait.
+    # Every other status (400, 401, 404, ...) means the request itself is bad and
+    # will fail again identically, so those raise immediately instead of stalling
+    # a whole `convert` run on retries that can't succeed.
+    RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+    DEFAULT_MAX_RETRIES = 5
+    DEFAULT_RETRY_DELAY = 5  # seconds; doubles each attempt, so 5,10,20,40,80
+
     def __init__(self, config):
         super().__init__(config)
 
@@ -368,20 +390,33 @@ class OpenAICompatibleModelStack(ModelStack):
         if 'top_p' in self.config:
             payload['top_p'] = self.config['top_p']
 
-        r = requests.post(url, headers=headers, json=payload, timeout=self.config.get('timeout', 120))
-        if r.status_code != 200:
-            raise Exception(f"Request failed with status code {r.status_code}: {r.text}")
-        return r.json()['choices'][0]['message']['content']
+        max_retries = self.config.get('max_retries', self.DEFAULT_MAX_RETRIES)
+        retry_delay = self.config.get('retry_delay', self.DEFAULT_RETRY_DELAY)
+
+        for attempt in range(max_retries + 1):
+            r = requests.post(url, headers=headers, json=payload, timeout=self.config.get('timeout', 120))
+            if r.status_code == 200:
+                return r.json()['choices'][0]['message']['content']
+            if r.status_code not in self.RETRYABLE_STATUS_CODES or attempt == max_retries:
+                raise Exception(f"Request failed with status code {r.status_code}: {r.text}")
+            wait = retry_delay * (2 ** attempt)
+            print(f"[WARN] {model}: status {r.status_code}, retrying in {wait}s "
+                  f"(attempt {attempt + 1}/{max_retries}): {r.text}")
+            time.sleep(wait)
 
     def query(self, prompt, max_tokens=1024):
         return self._request(prompt, max_tokens)
 
-    def transcribe(self, audio_bytes, filename='audio.mp3', language=None, prompt=None):
+    def transcribe_file(self, path, language=None):
         """Transcribe audio via an OpenAI-compatible /audio/transcriptions endpoint.
 
         A different endpoint and encoding from chat: the file goes as multipart form data
         rather than JSON, so this cannot reuse _request.
         """
+        with open(path, 'rb') as handle:
+            audio_bytes = handle.read()
+        filename = os.path.basename(path)
+        prompt = self.config.get('prompt')
         base_url = self.config['base_url'].rstrip('/')
         api_key = self.config.get('api_key')
         if not api_key and self.config.get('api_key_env'):
@@ -423,6 +458,116 @@ class OpenAICompatibleModelStack(ModelStack):
             {'type': 'image_url', 'image_url': {'url': f'data:{mime_type};base64,{encoded}'}},
         ]
         return self._request(content, max_tokens)
+
+
+class LocalWhisperModelStack(ModelStack):
+    """Speech-to-text with faster-whisper on the local machine.
+
+    Chosen over a hosted endpoint for long recordings: there is no upload, no per-file
+    size cap, and no per-minute charge. faster-whisper segments a long file internally,
+    so a multi-hour recording needs no chunking on our side.
+
+    Config keys: model (e.g. 'large-v3'), device ('cuda' | 'cpu' | 'auto'),
+    compute_type ('float16' | 'int8_float16' | 'int8'), beam_size, vad_filter.
+    """
+
+    # One model per (name, device, compute type), shared by every caller in the process.
+    # Loading large-v3 costs seconds and gigabytes of VRAM; doing it per file would
+    # dominate the run.
+    _models = {}
+    _load_lock = threading.Lock()
+    # The GPU is one resource. Threads calling in parallel would contend for VRAM and
+    # finish no sooner, so transcription is serialised.
+    _gpu_lock = threading.Lock()
+
+    @staticmethod
+    def _register_cuda_dlls():
+        """Put the pip-installed CUDA runtime on the DLL search path.
+
+        CTranslate2 links cuBLAS and cuDNN by name. The nvidia-*-cu12 wheels drop those
+        DLLs inside site-packages, which Windows does not search, so without this the
+        GPU path dies with 'cublas64_12.dll is not found' even though CUDA is present.
+        """
+        if os.name != 'nt':
+            return
+        try:
+            import nvidia
+        except ImportError:
+            return
+        for root in nvidia.__path__:
+            for entry in glob.glob(os.path.join(root, '*', 'bin')):
+                try:
+                    os.add_dll_directory(entry)
+                except OSError:
+                    pass
+                # add_dll_directory only covers LoadLibraryEx with the search-path flags.
+                # CTranslate2 asks for 'cublas64_12.dll' by bare name, which follows the
+                # classic search order, so the directory has to be on PATH as well.
+                if entry not in os.environ.get('PATH', ''):
+                    os.environ['PATH'] = entry + os.pathsep + os.environ.get('PATH', '')
+
+    def _resolve_device(self):
+        device = self.config.get('device', 'auto')
+        if device != 'auto':
+            return device
+        try:
+            import ctranslate2
+            return 'cuda' if ctranslate2.get_cuda_device_count() > 0 else 'cpu'
+        except Exception:
+            return 'cpu'
+
+    def _get_model(self):
+        # Before importing faster_whisper: it pulls in ctranslate2, which resolves the
+        # CUDA libraries against whatever the search path looks like at that moment.
+        self._register_cuda_dlls()
+        from faster_whisper import WhisperModel
+
+        name = self.config.get('model', 'large-v3')
+        device = self._resolve_device()
+        compute_type = self.config.get('compute_type') or ('float16' if device == 'cuda' else 'int8')
+        key = (name, device, compute_type)
+
+        with self._load_lock:
+            if key in self._models:
+                return self._models[key]
+            try:
+                print(f"  Loading whisper '{name}' on {device} ({compute_type})...")
+                self._models[key] = WhisperModel(name, device=device, compute_type=compute_type)
+            except Exception as e:
+                if device != 'cuda':
+                    raise
+                # A broken CUDA install should slow the run down, not end it.
+                print(f"[WARN] GPU unavailable ({e}); falling back to CPU.")
+                key = (name, 'cpu', 'int8')
+                if key not in self._models:
+                    self._models[key] = WhisperModel(name, device='cpu', compute_type='int8')
+            return self._models[key]
+
+    def transcribe_file(self, path, language=None):
+        model = self._get_model()
+        batch_size = self.config.get('batch_size', 0)
+        options = dict(
+            language=language or self.config.get('language'),
+            beam_size=self.config.get('beam_size', 5),
+            # Skips silence, which is most of a room recording and pure cost.
+            vad_filter=self.config.get('vad_filter', True),
+        )
+
+        with self._gpu_lock:
+            if batch_size and batch_size > 1:
+                # Batching feeds many VAD-split windows through the GPU at once, which is
+                # where a large card earns its keep on multi-hour recordings.
+                from faster_whisper import BatchedInferencePipeline
+                pipeline = BatchedInferencePipeline(model=model)
+                options.pop('vad_filter', None)  # batching always segments on VAD
+                segments, _info = pipeline.transcribe(str(path), batch_size=batch_size, **options)
+            else:
+                segments, _info = model.transcribe(str(path), **options)
+            # transcribe() returns a generator; the work happens as it is consumed.
+            return ''.join(segment.text for segment in segments).strip()
+
+    def has_upload_limit(self) -> bool:
+        return False
 
 
 class TEMPLATE_ModelStack(ModelStack):

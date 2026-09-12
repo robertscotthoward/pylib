@@ -180,6 +180,8 @@ def get_markdown(filepath, repair_ocr: bool = True):
             return image_to_markdown(filepath)
         if extension in AUDIO_EXTENSIONS:
             return audio_to_markdown(filepath)
+        if extension in HTML_EXTENSIONS:
+            return html_to_markdown(filepath)
         return readText(filepath)
     except Exception as e:
         print(f"Error getting text from {filepath}: {e}")
@@ -283,6 +285,81 @@ def _locate_and_set_tessdata():
 
 AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga', '.opus', '.aac', '.wma', '.aiff'}
 
+HTML_EXTENSIONS = {'.html', '.htm'}
+
+# Fallback used only when config.yaml has no 'all/html_to_markdown/prompt'; the real
+# extraction rules live in config.yaml so they can be tuned without a code change.
+_DEFAULT_HTML_TO_MARKDOWN_PROMPT = (
+    "Convert the provided raw HTML into clean, content-focused Markdown. Remove all "
+    "boilerplate (navigation, footers, ads) and links -- keep only the anchor text, not "
+    "the URL. Preserve headings and lists as Markdown; render tables as plain text or "
+    "bullets, never as a Markdown table. Strip images and multimedia. Output only the "
+    "resulting Markdown, with no preamble or commentary."
+)
+
+
+def _strip_html_for_llm(html: str) -> str:
+    """Strip <script>, <style>, comments, and every tag attribute from raw HTML.
+
+    An LLM only needs the structural tags and text to produce markdown; JS, CSS, inline
+    styles, class names, and IDs are pure noise that inflates the prompt without adding
+    information. BeautifulSoup does this once, cheaply, before the (much more expensive)
+    LLM call.
+    """
+    from bs4 import BeautifulSoup, Comment
+
+    soup = BeautifulSoup(html, 'html.parser')
+
+    for tag in soup(['script', 'style', 'noscript', 'svg', 'link', 'meta']):
+        tag.decompose()
+
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+
+    for tag in soup.find_all(True):
+        tag.attrs = {}
+
+    return str(soup)
+
+
+def html_to_markdown(filepath) -> str | None:
+    """Convert an HTML file to clean markdown.
+
+    BeautifulSoup first strips JS, CSS, and every HTML attribute (see
+    _strip_html_for_llm), then the reduced HTML is rewritten to markdown by a configured
+    LLM. Configured under config.yaml 'all/html_to_markdown', following the same
+    enabled/model/prompt shape as image_describe and ocr_postprocess. Returns None when
+    the feature is disabled, unconfigured, the file has no content, or the model call fails.
+    """
+    try:
+        from lib.configurations import get_config_credentials_environment
+        from lib.ai.modelstack import ModelStack
+
+        html = read_text_best_effort(filepath)
+        stripped = _strip_html_for_llm(html)
+        if not stripped.strip():
+            return None
+
+        config_path = _find_pylib_file('config.yaml')
+        credentials_path = _find_pylib_file('credentials.yaml')
+        config, _, _ = get_config_credentials_environment(config_path or 'config.yaml', credentials_path)
+        settings = config.get('html_to_markdown') or {}
+        if not settings.get('enabled', True) or not settings.get('model'):
+            return None
+
+        model_config = settings['model']
+        prompt = settings.get('prompt', _DEFAULT_HTML_TO_MARKDOWN_PROMPT)
+        modelstack = ModelStack.from_config(model_config)
+        with _llm_semaphore:
+            markdown = modelstack.query(
+                f"{prompt}\n\nInput HTML:\n{stripped}",
+                max_tokens=model_config.get('max_tokens', 16384),
+            )
+        return markdown.strip() if markdown and markdown.strip() else None
+    except Exception as e:
+        print(f"[WARN] HTML to markdown conversion failed for {os.path.basename(filepath)}: {e}")
+        return None
+
 # Whisper endpoints reject oversized uploads. Splitting long recordings needs ffmpeg, so
 # for now an over-limit file is reported rather than silently half-transcribed.
 AUDIO_MAX_MB = 25
@@ -305,21 +382,26 @@ def audio_to_markdown(filepath) -> str | None:
         if not settings.get('enabled', True) or not settings.get('model'):
             return None
 
-        size_mb = os.path.getsize(filepath) / (1024 * 1024)
-        limit = settings.get('max_mb', AUDIO_MAX_MB)
-        if size_mb > limit:
-            print(f"[WARN] {os.path.basename(filepath)} is {size_mb:.0f} MB, over the {limit} MB "
-                  f"transcription limit; skipping. Split it or raise 'max_mb'.")
-            return None
-
         model_config = settings['model']
         modelstack = ModelStack.from_config(model_config)
-        with _llm_semaphore:
-            text = modelstack.transcribe(
-                readBytes(filepath),
-                filename=os.path.basename(filepath),
-                language=settings.get('language'),
-            )
+
+        # Only a backend that uploads the file has a size ceiling. A local model reads
+        # straight off disk and segments internally, so multi-hour recordings are fine.
+        if modelstack.has_upload_limit():
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            limit = settings.get('max_mb', AUDIO_MAX_MB)
+            if limit and size_mb > limit:
+                print(f"[WARN] {os.path.basename(filepath)} is {size_mb:.0f} MB, over the {limit} MB "
+                      f"upload limit for this backend; skipping. Use a local model to remove the limit.")
+                return None
+
+        # The shared semaphore paces network calls. Local transcription does its own
+        # serialising on the GPU, so it must not also consume a network slot.
+        if modelstack.has_upload_limit():
+            with _llm_semaphore:
+                text = modelstack.transcribe_file(filepath, language=settings.get('language'))
+        else:
+            text = modelstack.transcribe_file(filepath, language=settings.get('language'))
         if not text or not text.strip():
             return None
         return f"# {os.path.basename(filepath)}\n\n{text.strip()}\n"
@@ -328,7 +410,10 @@ def audio_to_markdown(filepath) -> str | None:
         return None
 
 
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tif', '.tiff', '.webp'}
+# Camera RAW. Decoded to JPEG before upload; no vision endpoint reads sensor data.
+RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf', '.srw'}
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tif', '.tiff', '.webp'} | RAW_EXTENSIONS
 
 _IMAGE_MIME = {
     '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
@@ -342,21 +427,59 @@ _IMAGE_MIME = {
 IMAGE_MAX_EDGE = 1568
 
 
-def _prepare_image(filepath) -> tuple:
-    """Return (bytes, mime type) for upload, downscaling anything oversized to JPEG."""
+def _raw_to_jpeg_bytes(filepath) -> bytes:
+    """Decode a camera RAW file to JPEG bytes.
+
+    Nearly every RAW holds a full-size JPEG preview the camera already rendered, and
+    lifting it out takes milliseconds against a third of a second to demosaic the sensor
+    data. The preview is what a human would see and is more than the vision model needs,
+    so it is preferred; demosaicing is the fallback for files without one.
+    """
+    import rawpy
+    from PIL import Image
+
+    with rawpy.imread(str(filepath)) as raw:
+        try:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                return thumb.data
+        except Exception:
+            pass
+        rgb = raw.postprocess(half_size=True, use_camera_wb=True)
+
+    buffer = io.BytesIO()
+    Image.fromarray(rgb).save(buffer, format='JPEG', quality=88)
+    return buffer.getvalue()
+
+
+def _prepare_image(filepath, max_edge: int = None, quality: int = 85) -> tuple:
+    """Return (bytes, mime type) for upload, downscaling anything oversized to JPEG.
+
+    max_edge trades upload size against legibility of small text. Name badges and
+    background signage occupy a tiny fraction of a group photo, and detail lost here
+    cannot be recovered by any prompt.
+    """
+    max_edge = max_edge or IMAGE_MAX_EDGE
     extension = os.path.splitext(filepath)[1].lower()
     mime = _IMAGE_MIME.get(extension, 'image/jpeg')
-    raw = readBytes(filepath)
+
+    if extension in RAW_EXTENSIONS:
+        # Let a decode failure propagate: sending undecoded RAW bytes labelled as JPEG
+        # would waste an upload and return nonsense.
+        raw = _raw_to_jpeg_bytes(filepath)
+        extension, mime = '.jpg', 'image/jpeg'
+    else:
+        raw = readBytes(filepath)
 
     try:
         from PIL import Image
         with Image.open(io.BytesIO(raw)) as img:
-            if max(img.size) <= IMAGE_MAX_EDGE and extension in ('.jpg', '.jpeg', '.png'):
+            if max(img.size) <= max_edge and extension in ('.jpg', '.jpeg', '.png'):
                 return raw, mime
             img = img.convert('RGB')
-            img.thumbnail((IMAGE_MAX_EDGE, IMAGE_MAX_EDGE))
+            img.thumbnail((max_edge, max_edge), Image.LANCZOS)
             buffer = io.BytesIO()
-            img.save(buffer, format='JPEG', quality=85)
+            img.save(buffer, format='JPEG', quality=quality)
             return buffer.getvalue(), 'image/jpeg'
     except Exception as e:
         # An unreadable or exotic image still gets one attempt as-is.
@@ -383,7 +506,11 @@ def image_to_markdown(filepath) -> str | None:
 
         model_config = settings['model']
         prompt = settings.get('prompt', 'Describe this image in detail.')
-        image_bytes, mime = _prepare_image(filepath)
+        image_bytes, mime = _prepare_image(
+            filepath,
+            max_edge=settings.get('max_edge'),
+            quality=settings.get('jpeg_quality', 85),
+        )
 
         modelstack = ModelStack.from_config(model_config)
         with _llm_semaphore:
@@ -782,17 +909,43 @@ def docx_to_text(docx_path):
     return '\n\n'.join(parts)
 
 
-def xls_bytes_to_markdown(byte_data):
-    # 1. Wrap the byte array in a file-like object
-    byte_stream = io.BytesIO(byte_data)
-    
-    # 2. Read the XLS file
-    # Note: xlrd is required for .xls files
-    df = pd.read_excel(byte_stream, engine='xlrd')
-    
-    # 3. Convert to Markdown
-    # 'tabulate' is used under the hood for clean formatting
-    return df.to_markdown(index=False)
+def _excel_bytes_to_markdown(b: bytes, engines) -> str:
+    """Render every sheet of a workbook as a '# Sheet name' heading followed by CSV.
+
+    `engines` is tried in order. Extensions lie in an old archive: an .xls that is really
+    an .xlsx (or the reverse) still reads once the other engine gets a turn.
+    """
+    last_error = None
+    for engine in engines:
+        try:
+            with pd.ExcelFile(io.BytesIO(b), engine=engine) as workbook:
+                parts = []
+                for sheet_name in workbook.sheet_names:
+                    frame = workbook.parse(sheet_name)
+                    parts.append(f"# {sheet_name}")
+                    parts.append(frame.to_csv(index=False, lineterminator='\n').strip('\n'))
+                return '\n'.join(parts)
+        except Exception as e:
+            last_error = e
+
+    # Report exports are often HTML tables saved under a spreadsheet name; this archive
+    # contains one. pandas reads those directly.
+    try:
+        tables = pd.read_html(io.BytesIO(b))
+        if tables:
+            parts = []
+            for number, frame in enumerate(tables, 1):
+                parts.append(f"# Table {number}")
+                parts.append(frame.to_csv(index=False, lineterminator='\n').strip('\n'))
+            return '\n'.join(parts)
+    except Exception:
+        pass
+
+    raise last_error
+
+
+def xls_bytes_to_markdown(b: bytes) -> str:
+    return _excel_bytes_to_markdown(b, ('xlrd', 'openpyxl'))
 
 
 
@@ -955,19 +1108,9 @@ def doc_bytes_to_markdown(b : bytes) -> str:
 
 
 def xlsx_bytes_to_markdown(b : bytes) -> str:
-    import pandas as pd
-    import io
-
-    # We cannot just convert this to a markdown table because the columns are not always aligned and there migth be too many columns.
-    excel_file = pd.ExcelFile(io.BytesIO(b))
-    markdown_parts = []
-
-    for sheet_name in excel_file.sheet_names:
-        df = pd.read_excel(io.BytesIO(b), sheet_name=sheet_name)
-        markdown_parts.append(f"# {sheet_name}")
-        markdown_parts.append(df.to_csv(index=False, lineterminator='\n').strip('\n'))
-
-    return '\n'.join(markdown_parts)
+    # CSV rather than a markdown table: sheet columns are often ragged or too numerous
+    # for a pipe table to stay readable.
+    return _excel_bytes_to_markdown(b, ('openpyxl', 'xlrd'))
 
 
 

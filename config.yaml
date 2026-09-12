@@ -26,29 +26,63 @@ all:
     enabled: true
     # Whisper auto-detects language when this is unset; set e.g. 'en' to pin it.
     language:
-    # Files above this are skipped rather than half-transcribed: splitting long
-    # recordings needs ffmpeg, which this does not shell out to.
+    # Only applies to backends that upload the file. Ignored by local_whisper.
     max_mb: 25
     model:
-      class: openai_compatible
-      provider: deepinfra
-      base_url: https://api.deepinfra.com/v1/openai
-      model: openai/whisper-large-v3
-      api_key_env: DEEPINFRA_TOKEN
-      # A long recording takes a while to upload and transcribe.
-      timeout: 600
+      # Local GPU transcription: no upload, no size cap, no per-minute cost. Long
+      # recordings are segmented internally, so nothing has to be split first.
+      class: local_whisper
+      model: large-v3
+      device: auto            # auto picks cuda when available, else cpu
+      compute_type:           # blank: float16 on cuda, int8 on cpu
+      beam_size: 5
+      vad_filter: true        # skip silence, which is most of a room recording
+      # Windows processed together on the GPU. 0 or 1 disables batching. Higher uses
+      # more VRAM; 16 is comfortable on a 32 GB card.
+      batch_size: 16
+      # Hosted alternative for a machine with no GPU. Swap 'class' back to this block
+      # and note the 25 MB per-file ceiling above applies again.
+      # class: openai_compatible
+      # provider: deepinfra
+      # base_url: https://api.deepinfra.com/v1/openai
+      # model: openai/whisper-large-v3
+      # api_key_env: DEEPINFRA_TOKEN
+      # timeout: 600
 
   # Describes image files (.jpg, .png, ...) with a vision model so photographs and
   # photographed documents get a searchable .md sibling like every other file type.
   # Set enabled: false to leave images unconverted.
   image_describe:
     enabled: true
+    # Longest edge sent to the model. Name badges and background signage are small
+    # relative to the frame, so detail thrown away here cannot be recovered by prompting.
+    max_edge: 2560
+    jpeg_quality: 90
     prompt: >-
-      Describe this image for a searchable archive. State what it shows: people and what
-      they are doing, the setting, and any objects that identify the occasion. Transcribe
-      any visible text, signage, slides, whiteboards, or documents verbatim. If the image
-      is primarily a document, transcribe it in full and structure it as markdown. Do not
-      guess at names or dates that are not visible. Output only the description.
+      Describe this image for a searchable archive.
+
+
+      First, describe what the image shows: the people and what they are doing, the
+      setting, and any objects that identify the occasion.
+
+
+      Second, read the text in the image and transcribe it exactly. Look specifically at:
+      name tags, badges, lanyards and conference credentials worn by people, giving each
+      person's name and organisation exactly as printed; and background text such as
+      banners, signage, posters, projected slides, screens, whiteboards, table tents,
+      printed handouts and branding that identifies the event, host, venue, date or
+      sponsors.
+
+
+      Finally, end with a section headed "Visible text:" that lists every piece of text
+      you transcribed, one per line, each labelled with where it appears (for example
+      "name badge:", "banner:", "slide:").
+
+
+      Report only text you can actually read. Where text is present but too small or
+      blurred to read, say it is illegible instead of guessing. Never invent a name,
+      organisation, date or URL. If the image is primarily a document, transcribe it in
+      full and structure it as markdown. Output only the description.
     model:
       class: openai_compatible
       provider: deepinfra
@@ -88,6 +122,40 @@ all:
       # flight, so this leaves headroom above the slow case; 90s was too tight and turned
       # every dense page into a timeout. Concurrency is capped separately by
       # PYLIB_LLM_CONCURRENCY (see fileconvert.LLM_CONCURRENCY) to stop that climb.
+      timeout: 240
+
+  # Converts HTML files (.html, .htm) to markdown. BeautifulSoup strips <script>,
+  # <style>, comments, and every tag attribute first (see fileconvert._strip_html_for_llm)
+  # so the LLM only sees structural HTML and text, not JS/CSS noise. Swap providers by
+  # editing 'model' below, same as ocr_postprocess.
+  html_to_markdown:
+    enabled: true
+    prompt: >-
+      Task: Convert the provided raw HTML string into clean, content-focused Markdown.
+
+      Rules:
+      1. Extract Content Only: Remove all JavaScript (<script>), CSS (<style>), inline
+      styles, class names, IDs, metadata (<meta>), navigation menus, footers, headers,
+      advertisements, and functional boilerplate code.
+      2. Strip Hyperlinks: Do not keep HTML link tags (<a>) or Markdown links
+      ([text](url)). Preserve only the inner anchor text itself as plain text.
+      3. Preserve Document Hierarchy: translate HTML headings (<h1> through <h6>) into
+      their corresponding Markdown headers (# through ######); translate HTML ordered
+      (<ol>) and unordered (<ul>) lists into standard Markdown bulleted (* or -) or
+      numbered lists.
+      4. No Markdown Tables: convert any tabular data (<table>) into plain text sections
+      or bulleted lists. Do not use Markdown table formatting (|).
+      5. Formatting: retain basic emphasis text (bold, italics) where present, but strip
+      all images, SVGs, and multimedia embeds.
+      6. Clean Output: return only the resulting Markdown text. Do not wrap the entire
+      response in a code block or include meta-commentary (e.g., "Here is your markdown").
+    model:
+      class: openai_compatible
+      provider: deepinfra
+      base_url: https://api.deepinfra.com/v1/openai
+      model: Qwen/Qwen2.5-VL-32B-Instruct
+      api_key_env: DEEPINFRA_TOKEN
+      max_tokens: 16384
       timeout: 240
 
 
