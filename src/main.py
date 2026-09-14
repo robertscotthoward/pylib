@@ -86,7 +86,7 @@ def main():
 
 
 CONVERTIBLE_EXTENSIONS = {
-    ".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub",
+    ".pdf", ".docx", ".doc", ".rtf", ".rdf", ".epub", ".eml",
     ".xlsx", ".xls", ".pptx", ".ppt",
 }
 

@@ -168,6 +168,8 @@ def get_markdown(filepath, repair_ocr: bool = True):
             return rdf_to_text(filepath)
         if extension == ".epub":
             return epub_to_markdown(filepath)
+        if extension == ".eml":
+            return eml_to_markdown(filepath)
         if extension == ".xlsx":
             return xlsx_bytes_to_markdown(readBytes(filepath))
         if extension == ".xls":
@@ -187,6 +189,50 @@ def get_markdown(filepath, repair_ocr: bool = True):
         print(f"Error getting text from {filepath}: {e}")
         return None
 
+
+
+def eml_to_markdown(filepath) -> str | None:
+    """Convert a .eml email export to readable markdown.
+
+    Parses the MIME structure with the stdlib email module instead of reading the raw
+    file as text, so quoted-printable/base64 transfer encodings and attachment payloads
+    never leak into the output as mojibake. Only the plain-text (or HTML, converted to
+    text) body is kept; attachments are listed by filename only.
+    """
+    import email
+    from email.policy import default as email_policy
+
+    try:
+        with open(filepath, 'rb') as f:
+            msg = email.message_from_binary_file(f, policy=email_policy)
+    except Exception as e:
+        print(f"[ERROR] Failed to parse eml {os.path.basename(filepath)}: {e}")
+        return None
+
+    lines = [f"# {msg.get('Subject') or os.path.basename(filepath)}", ""]
+    for label, header in (("From", "From"), ("To", "To"), ("Cc", "Cc"), ("Date", "Date")):
+        value = msg.get(header)
+        if value:
+            lines.append(f"**{label}:** {value}")
+    lines.append("")
+
+    body_text = ""
+    body = msg.get_body(preferencelist=('plain', 'html'))
+    if body is not None:
+        content = body.get_content()
+        if body.get_content_type() == 'text/html':
+            from bs4 import BeautifulSoup
+            content = BeautifulSoup(content, 'html.parser').get_text(separator='\n', strip=True)
+        body_text = content.strip()
+    lines.append(body_text)
+
+    attachments = [part.get_filename() or "unnamed attachment" for part in msg.iter_attachments()]
+    if attachments:
+        lines.append("")
+        lines.append("**Attachments:**")
+        lines.extend(f"- {name}" for name in attachments)
+
+    return '\n'.join(lines).strip() + '\n'
 
 
 def epub_to_markdown(filepath):
